@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+sqlalchemy
+alembic
+argon2-cffi
+phonenumbers
+httpx
+pytest

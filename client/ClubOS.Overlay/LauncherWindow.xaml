@@ -1,0 +1,10 @@
+<Window x:Class="ClubOS.Overlay.LauncherWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:ClubOS.Overlay"
+        Title="ClubOS" Background="{StaticResource Bg}" FontFamily="{StaticResource UiFont}"
+        WindowStyle="None" ResizeMode="CanMinimize" ShowInTaskbar="True"
+        UseLayoutRounding="True" SnapsToDevicePixels="True">
+    <!-- Меню гостя на время игры: обычное окно на всю рабочую область (панель задач видна), его сворачивает кнопка в панели задач (и сама игра при запуске). -->
+    <local:LauncherView x:Name="View"/>
+</Window>

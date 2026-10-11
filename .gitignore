@@ -1,0 +1,27 @@
+# базы данных и их копии (данные клуба, ключи ПК)
+*.db
+*.db.bak*
+*.sqlite3
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# .NET: сборка и публикация (пересобирается командой dotnet build / deploy\publish.ps1)
+bin/
+obj/
+client/dist/
+.vs/
+
+# настройки с ключами ПК и локальные секреты
+agent.json
+*.pem
+.env
+.env.*
+
+# временное
+*.log
+*.tmp

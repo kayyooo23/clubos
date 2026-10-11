@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="ClubOS.Overlay/ClubOS.Overlay.csproj" />
+  <Project Path="ClubOS.Service/ClubOS.Service.csproj" />
+  <Project Path="ClubOS.Shared/ClubOS.Shared.csproj" />
+  <Project Path="ClubOS.Tests/ClubOS.Tests.csproj" />
+</Solution>
