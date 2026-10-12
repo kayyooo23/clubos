@@ -18,6 +18,24 @@ public class KioskGuardTests
     public void Escape_routes_are_blocked(int vk, bool alt, bool ctrl, bool shift) =>
         Assert.True(KioskGuard.ShouldBlock(vk, alt, ctrl, shift));
 
+    // во время сессии закрыты только пути на рабочий стол Windows; Alt+Tab и Alt+F4 нужны игре и возврату в меню
+    [Theory]
+    [InlineData(LWin, false, false, false)]
+    [InlineData(RWin, false, false, false)]
+    [InlineData(Esc, false, true, false)]      // Ctrl+Esc
+    [InlineData(Esc, false, true, true)]       // Ctrl+Shift+Esc
+    public void During_a_session_the_ways_to_the_windows_desktop_are_blocked(int vk, bool alt, bool ctrl, bool shift) =>
+        Assert.True(KioskGuard.ShouldBlock(vk, alt, ctrl, shift, KioskProfile.Session));
+
+    [Theory]
+    [InlineData(Tab, true, false, false)]      // Alt+Tab: переключение между игрой и меню
+    [InlineData(F4, true, false, false)]       // Alt+F4: закрыть игру
+    [InlineData(Esc, true, false, false)]
+    [InlineData(C, false, true, false)]
+    [InlineData(0x57, false, false, false)]    // W в игре
+    public void During_a_session_the_keys_a_game_needs_are_not_blocked(int vk, bool alt, bool ctrl, bool shift) =>
+        Assert.False(KioskGuard.ShouldBlock(vk, alt, ctrl, shift, KioskProfile.Session));
+
     [Theory]
     [InlineData(C, false, true, false)]        // Ctrl+C
     [InlineData(A, false, true, false)]        // Ctrl+A в поле ввода

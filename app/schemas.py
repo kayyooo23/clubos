@@ -16,6 +16,11 @@ class PCIn(BaseModel):
     name: str = Field(min_length=1, max_length=50)
 
 
+class NoticeIn(BaseModel):
+    """Сообщение администратора гостю на экран ПК. Длину и пустоту проверяет сервис (понятный ответ по-русски); здесь только предел размера запроса."""
+    text: str = Field(max_length=2000)
+
+
 MAP_COLUMNS, MAP_ROWS = 30, 20   # размер сетки карты клуба
 
 

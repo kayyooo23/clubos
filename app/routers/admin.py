@@ -1,7 +1,7 @@
 """Управление клубом — для сотрудника (токен из /api/admin/auth/login). Всё строго в пределах его клуба."""
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DB
@@ -12,10 +12,10 @@ from ..deps import StaffContext, staff_context
 from ..errors import ServiceError, commit_or_409
 from ..models import Account, AuditLog, Order, PC, Session, Tariff, WalletTransaction
 from ..phone import normalize_phone
-from ..schemas import (AdjustIn, AppIn, AppPatch, BookingIn, BookingPatch, ClubAdsToggleIn, LayoutIn, MoneyIn, OrderStatusIn, PCIn, PCPatch, ProductIn, ProductPatch,
-                       SessionIn, TariffIn)
+from ..schemas import (AdjustIn, AppIn, AppPatch, BookingIn, BookingPatch, ClubAdsToggleIn, LayoutIn, MoneyIn, NoticeIn, OrderStatusIn, PCIn, PCPatch,
+                       ProductIn, ProductPatch, SessionIn, TariffIn)
 from ..security import hash_secret, new_secret
-from ..services import accounts, ads, audit, bookings, cashier, catalog, covers, fleet, images, logins, sessions, shop
+from ..services import accounts, ads, audit, bookings, cashier, catalog, covers, fleet, images, logins, notices, sessions, shop
 from ..timeutil import utcnow
 
 router = APIRouter(prefix="/api/admin", tags=["админка"])
@@ -77,22 +77,40 @@ def list_pcs(ctx: StaffContext = Depends(staff_context), db: DB = Depends(get_db
     sessions.close_expired(db, ctx.club.id, now)
     active = sessions.active_sessions_by_pc(db, ctx.club.id)
     desktops = logins.staff_desktop_pc_ids(db, ctx.club.id, now)
+    cabinets = logins.guest_cabinet_phones(db, ctx.club, now)
     phones = {acc_id: phone for acc_id, phone in db.execute(select(Account.id, Account.phone).where(
         Account.id.in_([s.account_id for s in active.values()])))} if active else {}
     result = []
     upcoming = bookings.next_for_each_pc(db, ctx.club.id, now)
+    last_notices = notices.latest_by_pc(db, ctx.club.id, now)
     for pc in db.scalars(select(PC).where(PC.club_id == ctx.club.id).order_by(PC.id)):
         s = active.get(pc.id)
         booking = upcoming.get(pc.id)
+        notice = last_notices.get(pc.id)
         online = bool(pc.last_seen and (now - pc.last_seen).total_seconds() < config.PC_ONLINE_SECONDS)
         mode = "staff_desktop" if pc.id in desktops else "guest_session" if s else "locked"
         result.append({"id": pc.id, "name": pc.name, "online": online, "mode": mode,
                        "guest_phone": phones.get(s.account_id) if s else None,
-                       "session": sessions.session_out(s, now) if s else None,
+                       "cabinet_phone": cabinets.get(pc.id) if not s and pc.id not in desktops else None,   # гость сидит за ПК, но сессию ещё не начал
+                       "session":sessions.session_out(s, now) if s else None,
                        "zone": pc.zone, "pos_x": pc.pos_x, "pos_y": pc.pos_y, "note": pc.note,
                        "maintenance": pc.maintenance, "hw": fleet.hw_view(pc), "hw_changed": pc.hw_changed_at is not None,
-                       "booking": bookings.booking_out(booking, now) if booking else None})
+                       "booking": bookings.booking_out(booking, now) if booking else None,
+                       "last_notice": notices.notice_out(notice) if notice else None})
     return result
+
+
+@router.post("/pcs/{pc_id}/notice")
+def send_notice(pc_id: int, data: NoticeIn, request: Request, ctx: StaffContext = Depends(staff_context), db: DB = Depends(get_db)):
+    """Показать гостю на экране этого ПК сообщение администратора (любой текст до 300 знаков). Показывается один раз поверх всех окон
+    со звуком; если ПК сейчас не на связи, сообщение дойдёт, только если связь вернётся в течение двух минут."""
+    now = utcnow()
+    n = notices.send(db, ctx.club, ctx.account, pc_id, data.text, now)
+    audit.record(db, ctx.club.id, "pc_notice", now, actor=ctx.account, pc_id=n.pc_id, details=f"notice={n.id}", ip=_ip(request))
+    db.commit()
+    pc = db.get(PC, n.pc_id)
+    online = bool(pc.last_seen and (now - pc.last_seen).total_seconds() < config.PC_ONLINE_SECONDS)
+    return {**notices.notice_out(n), "online": online}
 
 
 @router.patch("/pcs/{pc_id}")
@@ -177,23 +195,27 @@ def list_apps(ctx: StaffContext = Depends(staff_context), db: DB = Depends(get_d
 
 
 @router.post("/apps")
-def create_app(data: AppIn, request: Request, ctx: StaffContext = Depends(staff_context), db: DB = Depends(get_db)):
+def create_app(data: AppIn, request: Request, background: BackgroundTasks, ctx: StaffContext = Depends(staff_context), db: DB = Depends(get_db)):
     now = utcnow()
     a = catalog.create_app(db, ctx.club.id, data, now)
     covers.fill_from_programs(db, ctx.club.id, now)          # программа, найденная на ПК, сразу получает свою иконку
     audit.record(db, ctx.club.id, "app_create", now, actor=ctx.account, details=f"app={a.id}", ip=_ip(request))
     db.commit()
+    if config.STEAM_AUTOCOVERS and a.launch_kind == "steam" and a.tab == "games":
+        background.add_task(covers.autofill_steam, ctx.club.id, force=True)      # постер Steam для новой игры подтянется сам, без кнопки
     return catalog.app_out(a, admin=True, cover=covers.meta_for_club(db, ctx.club.id).get(a.id))
 
 
 @router.patch("/apps/{app_id}")
-def update_app(app_id: int, data: AppPatch, request: Request, ctx: StaffContext = Depends(staff_context),
+def update_app(app_id: int, data: AppPatch, request: Request, background: BackgroundTasks, ctx: StaffContext = Depends(staff_context),
                db: DB = Depends(get_db)):
     a = catalog.update_app(db, ctx.club.id, app_id, data)
     now = utcnow()
     covers.fill_from_programs(db, ctx.club.id, now)
     audit.record(db, ctx.club.id, "app_update", now, actor=ctx.account, details=f"app={a.id}", ip=_ip(request))
     db.commit()
+    if config.STEAM_AUTOCOVERS and a.launch_kind == "steam" and a.tab == "games":
+        background.add_task(covers.autofill_steam, ctx.club.id, force=True)      # сменили номер игры Steam: постер подтянется сам
     return catalog.app_out(a, admin=True, cover=covers.meta_for_club(db, ctx.club.id).get(a.id))
 
 

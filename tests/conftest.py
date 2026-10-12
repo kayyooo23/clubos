@@ -3,6 +3,7 @@ import re
 
 os.environ["CLUB_DB_URL"] = "sqlite:///./test_club.db"  # до импорта app: db.py читает адрес при импорте
 os.environ.pop("CLUB_ENV", None)
+os.environ["CLUB_STEAM_AUTOCOVERS"] = "0"  # тесты не ходят в Steam сами; фоновую подгрузку проверяет test_covers_autofill, включая её явно
 
 import pytest
 from fastapi.testclient import TestClient

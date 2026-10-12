@@ -59,7 +59,8 @@ public sealed class FlowController : INotifyPropertyChanged
 
     public bool CanInteract => !Busy;
     public bool IsOffline => !_snapshot.Connected;
-    public string? Banner => _snapshot.Connected ? null : _snapshot.Message ?? "Нет связи с сервером";
+    /// <summary>Строка над формой: причина недоступности. Нет связи, или сервер что-то сообщил («ПК на обслуживании», «ПК забронирован на 19:30»).</summary>
+    public string? Banner => !string.IsNullOrWhiteSpace(_snapshot.Message) ? _snapshot.Message : _snapshot.Connected ? null : "Нет связи с сервером";
     public int Balance => _snapshot.Account?.Balance ?? 0;
     public string CabinetPhone => _snapshot.Account?.PhoneMasked ?? "";
     public bool HasSession => _snapshot.Session is not null;

@@ -286,6 +286,19 @@ class Call(Base):
     handled_by: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
 
 
+class PcNotice(Base):
+    """Сообщение администратора гостю на экран ПК («Пожалуйста, постарайтесь вести себя потише»). Любой текст до 300 знаков.
+    Клиент забирает его с очередным опросом состояния ПК, пока оно свежее (см. services/notices.py); delivered_at - когда ПК получил его в первый раз."""
+    __tablename__ = "pc_notices"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    club_id: Mapped[int] = mapped_column(ForeignKey("clubs.id"), index=True)
+    pc_id: Mapped[int] = mapped_column(ForeignKey("pcs.id"), index=True)
+    text: Mapped[str] = mapped_column(String(300))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class AppCover(Base):
     """Обложка игры в меню (постер PNG или JPEG, до 2 МБ). Лежит отдельно от записи каталога, чтобы списки не тянули байты.
     source: steam (подтянута из Steam), program (иконка программы, которую прислал ПК) или manual (загружена вручную, главнее автоматической);

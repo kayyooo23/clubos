@@ -23,8 +23,9 @@ public sealed class WindowsAppLauncher : IAppLauncher
             {
                 UseShellExecute = plan.UseShellExecute,
                 WorkingDirectory = plan.WorkingDirectory ?? "",
+                Arguments = plan.Arguments ?? "",
             })?.Dispose();
-            Log.Info($"Запущено из меню: {app.Title} ({app.LaunchKind})");
+            Log.Info($"Запущено из меню: {app.Title} ({app.LaunchKind}{(plan.Arguments is null ? "" : $", {plan.Arguments}")})");
             return null;
         }
         catch (Exception e) when (e is Win32Exception or InvalidOperationException or FileNotFoundException)

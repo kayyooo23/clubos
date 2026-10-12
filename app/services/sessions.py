@@ -114,6 +114,12 @@ def start_session(db: DB, club: Club, account: Account, pc_id: int, tariff_id: i
     if account.balance < need:
         raise ServiceError(402, f"Не хватает {need - account.balance} ₽ на балансе")
     booking = bookings.check_can_start(db, club, pc.id, account, now)   # чужая бронь держит ПК: отказ; своя: отметим использованной
+    seated = logins.guest_at_pc(db, club, pc.id, now)    # сессии на ПК нет (проверено выше), значит это гость в кабинете
+    if seated and seated.id != account.id:
+        if booking is None:
+            # иначе тот, кто сел за ПК, получил бы чужое оплаченное время
+            raise ServiceError(409, "За этим ПК сидит другой гость. Отправьте его за другой ПК («Заблокировать ПК») и запустите сессию снова")
+        logins.end_pc_logins(db, pc.id, now)               # у забронировавшего приоритет над чужим гостем в кабинете
 
     planned_end = billing.compute_planned_end(t, now, club.utc_offset, account.balance)
     base_end = rate = None

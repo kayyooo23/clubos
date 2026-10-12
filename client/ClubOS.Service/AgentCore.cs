@@ -111,7 +111,7 @@ public sealed class AgentCore
             // Сервер считает гостя вошедшим, а у нас токена нет (служба потеряла его): кабинетом всё равно не воспользоваться,
             // поэтому показываем обычный экран входа — гость войдёт заново (сервер это разрешает).
             var account = _last.Mode == PcMode.Locked && _token is null && _last.Account?.Role == "guest" ? null : _last.Account;
-            if (_connected) return new(true, _last.Mode, account, _last.Session, _last.Message, left, _last.ClubName, _last.PcName);
+            if (_connected) return new(true, _last.Mode, account, _last.Session, _last.Message, left, _last.ClubName, _last.PcName, _last.Notices);
 
             var message = _lastError ?? "Нет связи с сервером";
             return _last.Mode switch

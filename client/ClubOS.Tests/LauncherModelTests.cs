@@ -327,6 +327,12 @@ public class LauncherModelTests
     public async Task Catalog_is_refreshed_every_few_minutes_while_the_guest_is_in()
     {
         var (model, flow, agent, _, time) = await InSession();
+        // в каталоге игры Steam без постеров: сначала несколько быстрых повторов (сервер подтягивает постеры сам), потом обычный срок
+        for (var i = 0; i < 6; i++)
+        {
+            time.Advance(TimeSpan.FromSeconds(11));
+            await Poll(flow, model);
+        }
         var before = agent.Ops(Ops.Apps).Count();
         time.Advance(TimeSpan.FromMinutes(4));
         await Poll(flow, model);

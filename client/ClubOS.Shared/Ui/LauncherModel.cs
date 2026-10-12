@@ -36,6 +36,8 @@ public sealed class LauncherModel : INotifyPropertyChanged
     private static readonly TimeSpan AppsRefreshEvery = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan AppsRetryAfter = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan CoversRetryAfter = TimeSpan.FromSeconds(5);   // служба ещё качает обложки: спросим скоро
+    private static readonly TimeSpan PostersRetryAfter = TimeSpan.FromSeconds(10); // у игр из Steam ещё нет постеров: сервер подтягивает их сам, спросим скоро
+    private const int MaxPosterRetries = 6;                                         // но не вечно: у части игр постера в Steam нет совсем
     private static readonly TimeSpan AvailabilityEvery = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ErrorLifetime = TimeSpan.FromSeconds(10);
     private static readonly CultureInfo Ru = CultureInfo.GetCultureInfo("ru-RU");
@@ -48,6 +50,7 @@ public sealed class LauncherModel : INotifyPropertyChanged
 
     private IReadOnlyList<AppInfo> _apps = [];
     private bool _appsLoaded, _needApps = true, _inLauncher, _hadSession;
+    private int _posterRetries;
     private DateTimeOffset _appsAt = DateTimeOffset.MinValue, _availabilityAt, _errorAt, _noticeAt;
     private LauncherPage _page = LauncherPage.Tariffs;
     private string _search = "", _category = "";
@@ -211,9 +214,20 @@ public sealed class LauncherModel : INotifyPropertyChanged
         {
             _apps = r.Apps;
             _appsLoaded = true;
-            _appsAt = _apps.Any(a => a.CoverVersion is not null && ImageFiles.Safe(a.CoverPath, _coversDir) is null)
-                ? now - AppsRefreshEvery + CoversRetryAfter    // у части игр обложка ещё не скачана: следующий запрос через несколько секунд
-                : now;
+            var downloading = _apps.Any(a => a.CoverVersion is not null && ImageFiles.Safe(a.CoverPath, _coversDir) is null);
+            var noPosterYet = _apps.Any(a => a.Tab == "games" && a.LaunchKind == "steam" && a.CoverVersion is null);
+            if (downloading)
+                _appsAt = now - AppsRefreshEvery + CoversRetryAfter;       // у части игр обложка ещё не скачана: следующий запрос через несколько секунд
+            else if (noPosterYet && _posterRetries < MaxPosterRetries)
+            {
+                _posterRetries++;                                           // сервер как раз подтягивает постеры Steam: посмотрим, появились ли
+                _appsAt = now - AppsRefreshEvery + PostersRetryAfter;
+            }
+            else
+            {
+                if (!noPosterYet) _posterRetries = 0;
+                _appsAt = now;
+            }
             Rebuild();
         }
         else
@@ -231,6 +245,7 @@ public sealed class LauncherModel : INotifyPropertyChanged
         if (inLauncher && !_inLauncher)
         {
             _needApps = true;
+            _posterRetries = 0;
             SelectPage(hasSession ? LauncherPage.Library : LauncherPage.Tariffs);
         }
         else if (!inLauncher && _inLauncher)

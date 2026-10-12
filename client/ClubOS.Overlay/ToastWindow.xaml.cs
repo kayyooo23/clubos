@@ -12,12 +12,16 @@ namespace ClubOS.Overlay;
 /// Уведомление в правом нижнем углу поверх всех окон: «через 5 минут тариф закончится». Маленькое, не забирает фокус
 /// у игры (окно не активируется даже по щелчку), гаснет само через 15 секунд. Сопровождается коротким звуком.
 /// Поверх игры в «настоящем» полноэкранном режиме Windows окна не показывает: в такой игре нужен режим «в окне без рамки».
+/// Так же показывается сообщение администратора («Пожалуйста, постарайтесь вести себя потише»): дольше, и оно не исчезает само
+/// при смене режима ПК, пока гость его не прочёл.
 /// </summary>
 public partial class ToastWindow : Window
 {
     private const int GwlExStyle = -20, WsExNoActivate = 0x08000000, WsExToolWindow = 0x00000080;
     private static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan NoticeLifetime = TimeSpan.FromSeconds(30);
     private readonly DispatcherTimer _hide = new() { Interval = Lifetime };
+    private bool _isNotice;
 
     [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr hwnd, int index);
     [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr hwnd, int index, int value);
@@ -36,14 +40,26 @@ public partial class ToastWindow : Window
 
     public void ShowWarning(SessionWarning warning, bool sound = true)
     {
-        TitleText.Text = warning.Title;
-        BodyText.Text = warning.Text;
+        if (_isNotice && IsVisible) return;   // сообщение администратора ещё читают: предупреждение о времени придёт снова на следующей отметке
+        Present(warning.Title, warning.Text, Lifetime, notice: false, sound);
+    }
+
+    /// <summary>Сообщение администратора гостю: любой текст, поверх всех окон, со звуком.</summary>
+    public void ShowNotice(string text, bool sound = true) =>
+        Present("Сообщение от администратора", text, NoticeLifetime, notice: true, sound);
+
+    private void Present(string title, string body, TimeSpan lifetime, bool notice, bool sound)
+    {
+        _isNotice = notice;
+        TitleText.Text = title;
+        BodyText.Text = body;
         if (!IsVisible) Show();
         UpdateLayout();
         var area = SystemParameters.WorkArea;
         Left = area.Right - Width - 20;
         Top = area.Bottom - ActualHeight - 20;
         _hide.Stop();
+        _hide.Interval = lifetime;
         _hide.Start();
         if (sound) SystemSounds.Exclamation.Play();
     }
@@ -51,11 +67,15 @@ public partial class ToastWindow : Window
     private void Dismiss()
     {
         _hide.Stop();
+        _isNotice = false;
         Hide();
     }
 
     private void Toast_Click(object sender, MouseButtonEventArgs e) => Dismiss();
 
-    /// <summary>Окно не должно переживать сессию: при блокировке ПК уведомление убирается.</summary>
-    public void Clear() => Dismiss();
+    /// <summary>Окно не должно переживать сессию: при блокировке ПК предупреждение убирается. Сообщение администратора остаётся, пока его не закроют или оно не погаснет само.</summary>
+    public void Clear()
+    {
+        if (!_isNotice) Dismiss();
+    }
 }

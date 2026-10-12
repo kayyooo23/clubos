@@ -215,7 +215,7 @@ public class RightColumnTests
             var dots = Descendants<Ellipse>(view).Where(e => e.IsVisible && Bounds(e, view).Left >= column && Bounds(e, view).Top > lastButton.Box.Bottom).ToList();
             Assert.Equal(2, dots.Count);                                                           // круг и его ореол
             Assert.All(dots, d => Assert.Equal(d.ActualWidth, d.ActualHeight));
-            Assert.DoesNotContain(Descendants<Rectangle>(view), r => r.IsVisible && r.ActualWidth == 10 && r.ActualHeight == 10);   // квадратика больше нет
+            Assert.DoesNotContain(Descendants<Rectangle>(view), r => r.IsVisible && Math.Abs(r.ActualWidth - 10) < 1 && Math.Abs(r.ActualHeight - 10) < 1);   // квадратика больше нет
             window.Close();
         });
     }
@@ -242,7 +242,7 @@ public class RightColumnTests
             var warn = ((System.Windows.Media.SolidColorBrush)Application.Current.Resources["Warn"]).Color;
             var text = Descendants<TextBlock>(view).Single(t => t.Text == "Тариф закончился" && t.IsVisible);
             Assert.Equal(warn, ((System.Windows.Media.SolidColorBrush)text.Foreground).Color);
-            var dot = Descendants<Ellipse>(view).First(e => e.IsVisible && e.ActualWidth == 10);
+            var dot = Descendants<Ellipse>(view).First(e => e.IsVisible && Math.Abs(e.ActualWidth - 10) < 1);   // 10 пикселей с допуском: при масштабе экрана 125% размер округляется
             Assert.Equal(warn, ((System.Windows.Media.SolidColorBrush)dot.Fill).Color);
             window.Close();
         });

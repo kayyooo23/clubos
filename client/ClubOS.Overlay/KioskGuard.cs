@@ -5,7 +5,9 @@ namespace ClubOS.Overlay;
 
 /// <summary>
 /// Перехват клавиш, которыми гость мог бы уйти с экрана блокировки: Win, Alt+Tab, Alt+Esc, Ctrl+Esc, Ctrl+Shift+Esc, Alt+F4.
-/// Включается ТОЛЬКО пока виден экран блокировки (во время игры должны работать все клавиши).
+/// Два набора (KioskProfile). Lock: пока виден экран блокировки, закрыто всё перечисленное. Session: пока гость играет, закрыты только
+/// Win, Ctrl+Esc и Ctrl+Shift+Esc (меню «Пуск», Win+E, Win+D, диспетчер задач): они уводят на рабочий стол Windows; а Alt+Tab и Alt+F4
+/// остаются, иначе игра не закроется и из неё не вернуться в меню. На рабочем столе сотрудника перехвата нет.
 ///
 /// Чего это НЕ делает: Ctrl+Alt+Del перехватить из программы нельзя — его закрывают политиками Windows
 /// (диспетчер задач, смена пользователя и т.д., см. client/deploy). Это защита от случайного и любопытного гостя,
@@ -13,6 +15,12 @@ namespace ClubOS.Overlay;
 ///
 /// Аварийный выход (только с флагом --allow-exit, нужен при проверке на живом ПК): Ctrl+Shift+F12 три раза за 3 секунды.
 /// </summary>
+public enum KioskProfile
+{
+    Lock,       // экран блокировки: закрыты все пути с экрана
+    Session,    // идёт сессия гостя: закрыты только пути на рабочий стол Windows, игре нужны остальные клавиши
+}
+
 public sealed class KioskGuard : IDisposable
 {
     private const int WH_KEYBOARD_LL = 13;
@@ -26,6 +34,7 @@ public sealed class KioskGuard : IDisposable
     private readonly HookProc _proc; // держим ссылку, иначе сборщик мусора удалит делегат, и хук упадёт
     private IntPtr _hook = IntPtr.Zero;
     private readonly Queue<long> _exitPresses = new();
+    private volatile KioskProfile _profile = KioskProfile.Lock;
 
     public event Action? ExitRequested;
 
@@ -37,8 +46,10 @@ public sealed class KioskGuard : IDisposable
 
     public bool Active => _hook != IntPtr.Zero;
 
-    public void Enable()
+    /// <summary>Включает перехват с нужным набором. Уже включён: только меняет набор (экран блокировки сменился меню гостя или наоборот).</summary>
+    public void Enable(KioskProfile profile = KioskProfile.Lock)
     {
+        _profile = profile;
         if (Active) return;
         using var module = Process.GetCurrentProcess().MainModule!;
         _hook = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(module.ModuleName), 0);
@@ -53,9 +64,9 @@ public sealed class KioskGuard : IDisposable
     }
 
     /// <summary>Нужно ли проглотить нажатие. Вынесено отдельно, чтобы правило было видно в одном месте.</summary>
-    internal static bool ShouldBlock(int vk, bool alt, bool ctrl, bool shift) =>
+    internal static bool ShouldBlock(int vk, bool alt, bool ctrl, bool shift, KioskProfile profile = KioskProfile.Lock) =>
         vk is VK_LWIN or VK_RWIN
-        || (alt && vk is VK_TAB or VK_ESCAPE or VK_F4)
+        || (profile == KioskProfile.Lock && alt && vk is VK_TAB or VK_ESCAPE or VK_F4)
         || (ctrl && vk == VK_ESCAPE);                    // Ctrl+Esc и Ctrl+Shift+Esc (диспетчер задач)
 
     private IntPtr Callback(int nCode, IntPtr wParam, IntPtr lParam)
@@ -70,7 +81,7 @@ public sealed class KioskGuard : IDisposable
 
             if (_allowExit && vk == VK_F12 && ctrl && shift && RegisterExitPress())
                 ExitRequested?.Invoke();
-            if (ShouldBlock(vk, alt, ctrl, shift)) return (IntPtr)1;
+            if (ShouldBlock(vk, alt, ctrl, shift, _profile)) return (IntPtr)1;
         }
         return CallNextHookEx(_hook, nCode, wParam, lParam);
     }

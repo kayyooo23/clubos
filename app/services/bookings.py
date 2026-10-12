@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session as DB
 
 from .. import config
 from ..errors import ServiceError
-from ..models import Account, Booking, Club, PC
+from ..models import Account, Booking, Club, PC, Session
 from ..schemas import BookingIn, BookingPatch
+from . import logins
 
 MAX_DAYS_AHEAD = 30
 LATE_CREATE_SECONDS = 5 * 60       # бронь «на сейчас» вводят с небольшим опозданием: пять минут в прошлое допускаются
@@ -40,8 +41,41 @@ def _naive_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
 
 
+def check_pc_not_occupied(db: DB, club: Club, pc: PC, start: datetime, phone: str, now: datetime) -> None:
+    """Бронь не должна отбирать ПК у того, кто за ним сидит прямо сейчас (администратор у стойки или, позже, гость с телефона:
+    один и тот же ПК не должен достаться двоим). Бронь держит ПК с «за LEAD минут до начала», поэтому смотрим на начало удержания.
+    - идёт сессия с оплаченным концом (пакет, ночь): ПК занят до этого конца; у почасовой сессии конца нет (играют, пока хватает денег),
+      она мешает только брони, которая уже держит ПК;
+    - гость вошёл в кабинет или за ПК сидит сотрудник: мешают брони, которая уже держит ПК;
+    - сидящий гость с тем же номером, что у брони, не мешает: это его собственная бронь."""
+    hold_start = start - timedelta(minutes=config.BOOKING_LEAD_MINUTES)
+    session = db.scalar(select(Session).where(Session.pc_id == pc.id, Session.ended_at.is_(None)))
+    if session:
+        if db.get(Account, session.account_id).phone == phone:
+            return
+        if session.base_end and session.overtime_price:
+            paid_end = session.base_end
+        else:
+            paid_end = session.planned_end if session.tariff.kind != "hourly" else None
+        if hold_start <= now or (paid_end is not None and hold_start < paid_end):
+            if paid_end is not None and paid_end > now:
+                local_end = paid_end + timedelta(hours=club.utc_offset)
+                local_free = paid_end + timedelta(minutes=config.BOOKING_LEAD_MINUTES) + timedelta(hours=club.utc_offset)
+                raise ServiceError(409, f"ПК занят: на нём идёт сессия до {local_end:%H:%M}. "
+                                        f"Бронь возможна с {local_free:%H:%M} или на другом ПК")
+            raise ServiceError(409, "ПК занят: на нём идёт сессия гостя. Выберите другой ПК или время позже")
+        return
+    if hold_start > now:
+        return
+    if logins.staff_login_active(db, club, pc.id, now):
+        raise ServiceError(409, "ПК занят: на нём вошёл сотрудник. Выберите другой ПК или время позже")
+    seated = logins.guest_at_pc(db, club, pc.id, now)
+    if seated and seated.phone != phone:
+        raise ServiceError(409, "ПК занят: за ним уже сидит гость. Выберите другой ПК или время позже")
+
+
 def create(db: DB, club: Club, staff: Account, data: BookingIn, now: datetime) -> Booking:
-    pc = db.scalar(select(PC).where(PC.id == data.pc_id, PC.club_id == club.id))
+    pc = db.scalar(select(PC).where(PC.id == data.pc_id, PC.club_id == club.id).with_for_update())   # на PostgreSQL две брони одного ПК встают в очередь
     if not pc:
         raise ServiceError(404, "ПК не найден")
     start = _naive_utc(data.starts_at)
@@ -52,6 +86,7 @@ def create(db: DB, club: Club, staff: Account, data: BookingIn, now: datetime) -
         raise ServiceError(422, f"Бронь можно сделать не дальше, чем на {MAX_DAYS_AHEAD} дней вперёд")
     if pc.maintenance:
         raise ServiceError(409, "ПК на обслуживании, бронировать его нельзя")
+    check_pc_not_occupied(db, club, pc, start, data.phone, now)
     clash = db.scalar(select(Booking).where(
         Booking.club_id == club.id, Booking.pc_id == pc.id, Booking.status == "active",
         Booking.starts_at < end, Booking.ends_at > start))
@@ -95,6 +130,10 @@ def update(db: DB, club: Club, booking_id: int, data: BookingPatch, now: datetim
         changed.append("time")
     elif end != b.ends_at:
         changed.append("length")
+    if pc_id != b.pc_id or start != b.starts_at:
+        target = db.scalar(select(PC).where(PC.id == pc_id, PC.club_id == club.id).with_for_update())
+        new_phone = data.phone if "phone" in given and data.phone is not None else b.phone
+        check_pc_not_occupied(db, club, target, start, new_phone, now)    # новое место или время не должно отбирать ПК у сидящего за ним
     if pc_id != b.pc_id or start != b.starts_at or end != b.ends_at:
         clash = db.scalar(select(Booking).where(
             Booking.club_id == club.id, Booking.pc_id == pc_id, Booking.status == "active", Booking.id != b.id,

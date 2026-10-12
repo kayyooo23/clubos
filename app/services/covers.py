@@ -7,18 +7,25 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
+import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DB, defer
 
+from .. import config
+from ..db import SessionLocal
 from ..errors import ServiceError
 from ..models import PC, AppCover, CatalogApp
+from ..timeutil import utcnow
 from . import catalog, images
+
+log = logging.getLogger("clubos.covers")
 
 STEAM_COVER_URL = "https://cdn.cloudflare.steamstatic.com/steam/apps/{id}/library_600x900.jpg"
 COVER_MIN_SIDE = 48         # постер игры крупный, а иконка программы с ПК (ICO из exe) может быть 48 или 96 пикселей
@@ -99,6 +106,44 @@ def fill_from_steam(db: DB, club_id: int, now: datetime, fetch: Fetcher | None =
         except ServiceError:
             failed += 1             # Steam прислал не то, что мы принимаем: пропускаем эту игру
     return {"added": added, "not_found": failed, "left": 0}
+
+
+_autofill_lock = threading.Lock()
+_autofill_last: dict[int, float] = {}      # club_id -> когда в последний раз пробовали (time.monotonic)
+_autofill_running: set[int] = set()        # клубы, у которых загрузка идёт прямо сейчас
+
+
+def missing_steam_covers(apps: Sequence[CatalogApp], meta: dict[int, tuple[str, str]]) -> bool:
+    """Есть ли среди этих записей игра из Steam без обложки (тогда стоит подтянуть постеры)."""
+    return any(a.launch_kind == "steam" and a.tab == "games" and a.id not in meta for a in apps)
+
+
+def autofill_steam(club_id: int, fetch: Fetcher | None = None, *, force: bool = False) -> dict | None:
+    """Подтягивает постеры Steam играм клуба без обложки сама, без кнопки: запускается в фоне после ответа (BackgroundTasks), когда ПК запросил меню
+    или сотрудник добавил игру из Steam. Не чаще раза в config.STEAM_AUTOCOVERS_EVERY_SECONDS на клуб (force: сразу, для только что добавленной игры)
+    и не больше одной загрузки на клуб одновременно. Ручные и уже скачанные обложки не трогает (как и кнопка). Свой сеанс БД: запрос уже закончился.
+    Сбой сети или Steam молча пропускается, игра остаётся с буквой до следующей попытки. Возвращает результат или None, если ничего не делалось."""
+    now = time.monotonic()
+    with _autofill_lock:
+        if club_id in _autofill_running:
+            return None
+        if not force and now - _autofill_last.get(club_id, float("-inf")) < config.STEAM_AUTOCOVERS_EVERY_SECONDS:
+            return None
+        _autofill_running.add(club_id)
+        _autofill_last[club_id] = now
+    try:
+        with SessionLocal() as db:
+            result = fill_from_steam(db, club_id, utcnow(), fetch)
+            db.commit()
+        if result["added"]:
+            log.info("Постеры Steam подтянуты автоматически: клуб %s, добавлено %s, не найдено %s", club_id, result["added"], result["not_found"])
+        return result
+    except Exception:                                   # фоновая задача не должна ронять сервер: покажем в журнале и попробуем в следующий раз
+        log.exception("Не удалось подтянуть постеры Steam для клуба %s", club_id)
+        return None
+    finally:
+        with _autofill_lock:
+            _autofill_running.discard(club_id)
 
 
 def program_icons(db: DB, club_id: int) -> dict[str, str]:

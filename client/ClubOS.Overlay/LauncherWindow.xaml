@@ -5,6 +5,7 @@
         Title="ClubOS" Background="{StaticResource Bg}" FontFamily="{StaticResource UiFont}"
         WindowStyle="None" ResizeMode="CanMinimize" ShowInTaskbar="True"
         UseLayoutRounding="True" SnapsToDevicePixels="True">
-    <!-- Меню гостя на время игры: обычное окно на всю рабочую область (панель задач видна), его сворачивает кнопка в панели задач (и сама игра при запуске). -->
+    <!-- Меню гостя на время игры. Разработка: обычное окно на рабочую область (панель задач видна), его сворачивает кнопка в панели задач и сама игра при запуске.
+         Режим киоска (флаг kiosk): на весь экран, без значка в панели задач и без сворачивания (задаётся в LauncherWindow.xaml.cs). -->
     <local:LauncherView x:Name="View"/>
 </Window>

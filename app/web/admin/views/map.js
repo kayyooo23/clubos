@@ -1,7 +1,7 @@
 import { h, setChildren, badge, toast, confirmDialog, openModal, field, emptyState } from '../dom.js';
 import { get, post, patch } from '../api.js';
 import { clock, phonePretty, money, fmtDateTime } from '../format.js';
-import { startSessionDialog, addPcDialog, rotateKeyFlow } from './pcdialogs.js';
+import { startSessionDialog, addPcDialog, rotateKeyFlow, holdPcDialog, noticeDialog } from './pcdialogs.js';
 import { topupByPc } from './topup.js';
 
 const MAX_COLS = 30, MAX_ROWS = 20;        // размер сетки такой же, как проверяет сервер
@@ -10,6 +10,7 @@ const REFRESH_MS = 3000;
 const NO_ZONE_NAME = 'Общий зал';
 
 const STATES = {
+  seated: { label: 'Гость за ПК', css: 'seated' },
   booked: { label: 'Забронирован', css: 'booked' },
   free: { label: 'Свободен', css: '' },
   playing: { label: 'Играет', css: 'playing' },
@@ -22,6 +23,7 @@ function stateOf(pc) {
   if (pc.mode === 'guest_session') return 'playing';
   if (pc.maintenance) return 'maint';
   if (pc.mode === 'staff_desktop') return 'staff';
+  if (pc.cabinet_phone) return 'seated';                    // гость вошёл в кабинет, сессию ещё не начал: ПК занят
   if (pc.booking && pc.booking.holding) return 'booked';
   if (!pc.online) return 'offline';
   return 'free';
@@ -72,9 +74,9 @@ export function mount(root, ctx) {
 
   // ---------- легенда и фильтры ----------
   function renderLegend() {
-    const counts = { all: pcs.length, free: 0, booked: 0, playing: 0, staff: 0, offline: 0, maint: 0, config: 0 };
+    const counts = { all: pcs.length, free: 0, seated: 0, booked: 0, playing: 0, staff: 0, offline: 0, maint: 0, config: 0 };
     for (const pc of pcs) { counts[stateOf(pc)] += 1; if (pc.hw_changed) counts.config += 1; }
-    const items = [['all', 'Все'], ['free', 'Свободны'], ['booked', 'Бронь'], ['playing', 'Играют'], ['staff', 'Сотрудник'], ['offline', 'Нет связи'],
+    const items = [['all', 'Все'], ['free', 'Свободны'], ['seated', 'Гость за ПК'], ['booked', 'Бронь'], ['playing', 'Играют'], ['staff', 'Сотрудник'], ['offline', 'Нет связи'],
       ['maint', 'Обслуживание'], ['config', 'Конфигурация изменена']];
     setChildren(legend, items.filter(([key]) => key === 'all' || counts[key] > 0 || filter === key).map(([key, text]) =>
       h('button', { class: `btn btn-sm${filter === key ? ' active' : ''}`, type: 'button', onclick: () => { filter = key; renderAll(); } }, text, h('b', {}, String(counts[key])))));
@@ -94,10 +96,12 @@ export function mount(root, ctx) {
     const st = stateOf(pc);
     const left = pc.session && pc.session.seconds_left != null ? clock(pc.session.seconds_left) : null;
     const bookedAt = pc.booking ? fmtDateTime(pc.booking.starts_at, offset).slice(6) : '';
-    const sub = h('div', { class: 's' }, st === 'playing' ? (left ?? 'по факту') : st === 'booked' ? `Бронь ${bookedAt}` : STATES[st].label);
+    const waiting = pc.booking && new Date(`${pc.booking.starts_at}Z`).getTime() <= Date.now() + 60000;   // бронь «на сейчас»: гостя посадили у стойки, он идёт к ПК
+    const sub = h('div', { class: 's' }, st === 'playing' ? (left ?? 'по факту') : st === 'booked' ? (waiting ? 'Ждём гостя' : `Бронь ${bookedAt}`) : STATES[st].label);
     if (st === 'playing' && pc.session && pc.session.seconds_left != null) live.set(pc.id, { el: sub, left: pc.session.seconds_left });
     const lines = [pc.name, STATES[st].label];
     if (pc.guest_phone) lines.push(phonePretty(pc.guest_phone));
+    if (pc.cabinet_phone) lines.push(`${phonePretty(pc.cabinet_phone)}, сессия не начата`);
     if (pc.session) lines.push(`${pc.session.tariff}, ${money(pc.session.cost)}`);
     if (pc.booking) lines.push(`Бронь: ${phonePretty(pc.booking.phone)}, ${fmtDateTime(pc.booking.starts_at, offset)}`);
     if (pc.booking && pc.booking.comment) lines.push(`К брони: ${pc.booking.comment}`);
@@ -254,6 +258,11 @@ export function mount(root, ctx) {
     const s = pc.session;
     if (pc.booking) kv.push(['Бронь', `${phonePretty(pc.booking.phone)}${pc.booking.name ? `, ${pc.booking.name}` : ''}, с ${fmtDateTime(pc.booking.starts_at, offset)}`]);
     if (pc.booking && pc.booking.comment) kv.push(['К брони', pc.booking.comment]);
+    if (pc.cabinet_phone) kv.push(['Гость за ПК', phonePretty(pc.cabinet_phone)], ['Сессия', 'ещё не начата']);
+    if (pc.last_notice) {
+      const n = pc.last_notice;
+      kv.push(['Ваше сообщение', `«${n.text}»`], ['Статус', n.delivered_at ? `показано на ПК в ${fmtDateTime(n.delivered_at, offset).slice(6)}` : 'ещё не дошло до ПК']);
+    }
     if (st === 'playing' && s) {
       kv.push(['Гость', phonePretty(pc.guest_phone || '')], ['Тариф', s.tariff]);
       if (s.seconds_left != null) {
@@ -268,8 +277,12 @@ export function mount(root, ctx) {
     }
     const actions = [h('button', { class: 'btn btn-primary btn-sm', type: 'button', title: 'Принять наличные у гостя, который сидит за этим ПК',
       onclick: () => topupByPc(pc, load) }, 'Пополнить баланс')];
+    actions.push(h('button', { class: 'btn btn-sm', type: 'button', onclick: () => noticeDialog(pc, load) }, 'Сообщение гостю'));
     if (st === 'playing' && s) actions.push(h('button', { class: 'btn btn-danger btn-sm', type: 'button', onclick: () => stop(pc) }, 'Остановить сессию'));
     else if (st !== 'staff' && st !== 'maint') actions.push(h('button', { class: 'btn btn-sm', type: 'button', onclick: () => startSessionDialog(pc, load) }, 'Запустить сессию'));
+    if (st === 'free') actions.push(h('button', { class: 'btn btn-sm', type: 'button', title: 'Гость пришёл и выбрал этот ПК: занять его за ним, пока гость идёт к месту',
+      onclick: () => holdPcDialog(pc, load) }, 'Занять для гостя'));
+    if (st === 'seated') actions.push(h('button', { class: 'btn btn-sm', type: 'button', title: 'Отправить гостя за другой ПК: вход в кабинет закроется', onclick: () => lock(pc) }, 'Освободить ПК'));
     if (st === 'staff') actions.push(h('button', { class: 'btn btn-sm', type: 'button', onclick: () => lock(pc) }, 'Заблокировать ПК'));
     actions.push(h('button', { class: 'btn btn-sm', type: 'button', disabled: st === 'playing',
       title: st === 'playing' ? 'Сначала остановите сессию' : 'На обслуживании гостей на ПК не пускают',
@@ -278,7 +291,7 @@ export function mount(root, ctx) {
     actions.push(h('button', { class: 'btn btn-ghost btn-sm', type: 'button', title: 'Выдать новый ключ для клиента на этом ПК', onclick: () => rotateKeyFlow(pc) }, 'Ключ ПК'));
 
     setChildren(drawer, h('aside', { class: 'drawer', 'aria-label': pc.name },
-      h('div', { class: 'drawer-head' }, h('h2', {}, pc.name), badge(STATES[st].label, st === 'playing' ? 'live' : st === 'maint' ? 'warn' : ''),
+      h('div', { class: 'drawer-head' }, h('h2', {}, pc.name), badge(STATES[st].label, st === 'playing' ? 'live' : st === 'maint' ? 'warn' : st === 'seated' || st === 'booked' ? 'accent' : ''),
         h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Закрыть', onclick: () => { selectedId = null; renderAll(); } }, '×')),
       h('div', { class: 'small muted' }, `${pc.zone}${pc.pos_x != null ? `, клетка ${pc.pos_x + 1} x ${pc.pos_y + 1}` : ', не размещён'}`),
       kv.length ? h('dl', { class: 'kv', style: 'margin-top:14px' }, kv.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])) : null,

@@ -204,6 +204,59 @@ public sealed class CoverClientTests : IDisposable
         Assert.Equal(2, agent.Ops(Ops.Apps).Count());                                          // дальше обычные 5 минут
     }
 
+    [Fact]
+    public async Task Steam_games_without_posters_make_the_menu_ask_again_soon_a_few_times_and_then_rarely()
+    {
+        // сервер подтягивает постеры Steam сам, уже после ответа: первые ответы приходят без обложек, через несколько секунд они появляются
+        var (model, flow, agent, time) = Menu(() => [new AppInfo(1, "Игра", "games", "A", null, "steam", "1")]);
+        await flow.PollAsync();
+        await model.PollAsync();
+        Assert.Single(agent.Ops(Ops.Apps));
+        for (var i = 0; i < 6; i++)
+        {
+            time.Advance(TimeSpan.FromSeconds(11));
+            await flow.PollAsync(); await model.PollAsync();
+        }
+        Assert.Equal(7, agent.Ops(Ops.Apps).Count());                                          // шесть быстрых повторов через 10 секунд
+        time.Advance(TimeSpan.FromSeconds(11));
+        await flow.PollAsync(); await model.PollAsync();
+        Assert.Equal(7, agent.Ops(Ops.Apps).Count());                                          // постера в Steam, видимо, нет: дальше обычные 5 минут
+        time.Advance(TimeSpan.FromMinutes(5));
+        await flow.PollAsync(); await model.PollAsync();
+        Assert.Equal(8, agent.Ops(Ops.Apps).Count());
+    }
+
+    [Fact]
+    public async Task A_poster_that_appears_stops_the_quick_asking()
+    {
+        var path = Path.Combine(_dir, "1-aaaaaaaa.png");
+        var ready = false;
+        var (model, flow, agent, time) = Menu(() => [new AppInfo(1, "Игра", "games", "A", null, "steam", "1", ready ? "aaaaaaaa" : null, ready ? path : null)]);
+        await flow.PollAsync();
+        await model.PollAsync();
+        Assert.Null(model.GameCards[0].CoverPath);
+        ready = true;
+        time.Advance(TimeSpan.FromSeconds(11));
+        await flow.PollAsync(); await model.PollAsync();
+        Assert.Equal(2, agent.Ops(Ops.Apps).Count());
+        Assert.Equal(path, model.GameCards[0].CoverPath);                                      // постер появился
+        time.Advance(TimeSpan.FromSeconds(30));
+        await flow.PollAsync(); await model.PollAsync();
+        Assert.Equal(2, agent.Ops(Ops.Apps).Count());                                          // больше не спрашиваем до обычных 5 минут
+    }
+
+    [Fact]
+    public async Task Programs_and_non_steam_games_without_a_cover_do_not_cause_quick_asking()
+    {
+        var (model, flow, agent, time) = Menu(() => [new AppInfo(1, "Chrome", "apps", "Браузеры", null, "exe", @"C:\chrome.exe"),
+            new AppInfo(2, "Игра", "games", "A", null, "exe", @"C:\game.exe")]);
+        await flow.PollAsync();
+        await model.PollAsync();
+        time.Advance(TimeSpan.FromSeconds(30));
+        await flow.PollAsync(); await model.PollAsync();
+        Assert.Single(agent.Ops(Ops.Apps));
+    }
+
     // ---------- сетка ----------
     [Fact]
     public void The_grid_fills_the_whole_width_with_as_many_posters_as_fit()
@@ -281,7 +334,7 @@ public sealed class CoverClientTests : IDisposable
             Assert.True(row.Count >= 6, "на экране 1920 в ряду не меньше шести постеров");
             Assert.InRange(panelRight - right, 0, 8);
             Assert.All(row, t => Assert.Equal(row[0].ActualWidth, t.ActualWidth, 1));
-            Assert.Equal(Math.Round(row[0].ActualWidth * 1.5 + 48), row[0].ActualHeight);      // постер 2 на 3 плюс строка названия
+            Assert.InRange(Math.Abs(row[0].ActualWidth * 1.5 + 48 - row[0].ActualHeight), 0, 1);   // постер 2 на 3 плюс строка названия; допуск в пиксель: при масштабе экрана 125% размеры округляются до его пикселей
             window.Close();
         });
     }

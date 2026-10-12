@@ -8,7 +8,8 @@ namespace ClubOS.Overlay;
 /// <summary>
 /// Решает, какое окно сейчас показывать, по режиму ПК:
 ///   locked        → экран блокировки (в киоске — поверх всего, с перехватом клавиш и возвратом фокуса);
-///   guest_session → скрыт экран блокировки, виден только обычное окно меню (игры, баланс, время), клавиши свободны;
+///   guest_session → скрыт экран блокировки, виден меню (игры, баланс, время). Разработка: обычное окно, клавиши свободны.
+///                   Киоск: меню на весь экран без сворачивания, закрыты клавиши Win и Ctrl+Esc, ShellWatcher не пускает на рабочий стол Windows;
 ///   staff_desktop → ничего не закрывает, в трее значок «Заблокировать ПК».
 /// Пока служба не ответила ни разу, ПК закрыт (экран блокировки виден с самого старта).
 /// </summary>
@@ -20,7 +21,10 @@ public sealed class WindowCoordinator : IDisposable
     private readonly LauncherWindow _launcher;
     private readonly LauncherModel _model;
     private readonly ToastWindow _toast = new();
+    private readonly NoticeWindow _noticeWindow = new();
+    private readonly ShellWatcher _watcher;
     private readonly SessionWarnings _warnings = new();
+    private readonly NoticeTracker _notices = new();
     private readonly TrayController _tray;
     private readonly KioskGuard _kiosk;
     private readonly DispatcherTimer _poll = new() { Interval = TimeSpan.FromSeconds(1) };
@@ -33,7 +37,8 @@ public sealed class WindowCoordinator : IDisposable
         _model = model;
         _options = options;
         _lock = new LockWindow(flow, model, options.Kiosk);
-        _launcher = new LauncherWindow(model);
+        _launcher = new LauncherWindow(model, options.Kiosk);
+        _watcher = new ShellWatcher(_launcher);
         _tray = new TrayController(flow);
         _kiosk = new KioskGuard(options.AllowExit);
     }
@@ -42,6 +47,8 @@ public sealed class WindowCoordinator : IDisposable
     {
         _flow.SnapshotChanged += Apply;
         _flow.SnapshotChanged += WarnIfEnding;
+        _flow.SnapshotChanged += ShowAdminNotices;
+        _launcher.AppStarted += _watcher.Launched;      // только в киоске: гость запустил игру, следим, чтобы она открылась над меню
         _kiosk.ExitRequested += () => Application.Current.Dispatcher.Invoke(Exit);
         _lock.Closed += (_, _) => { if (!_options.Kiosk) Exit(); };   // в режиме разработки закрытие окна = выход
 
@@ -68,6 +75,7 @@ public sealed class WindowCoordinator : IDisposable
         var guestJustLeft = _mode == PcMode.GuestSession && s.Mode == PcMode.Locked;
         _mode = s.Mode;
         if (guestJustLeft) ClearClipboard();   // скопированный гостем пароль или текст не должен достаться следующему
+        if (s.Mode != PcMode.GuestSession) _watcher.Stop();
         switch (s.Mode)
         {
             case PcMode.Locked:
@@ -79,6 +87,11 @@ public sealed class WindowCoordinator : IDisposable
                 HideLock();
                 _tray.Hide();
                 _launcher.Bring();   // сессия началась: показываем меню с играми
+                if (_options.Kiosk)
+                {
+                    _kiosk.Enable(KioskProfile.Session);   // Win и Ctrl+Esc закрыты, игре нужны остальные клавиши
+                    _watcher.Start();
+                }
                 break;
             case PcMode.StaffDesktop:
                 HideLock();
@@ -98,6 +111,23 @@ public sealed class WindowCoordinator : IDisposable
             _toast.ShowWarning(warning);
         }
         if (s.Mode != PcMode.GuestSession) _toast.Clear();   // сессия кончилась: уведомление не должно остаться на экране блокировки
+    }
+
+    /// <summary>
+    /// Администратор написал гостю из админки: показываем сообщение один раз (см. NoticeTracker). В углу поверх меню и окон; если на переднем плане
+    /// чужое полноэкранное приложение (игра), где уголок не виден, то на весь экран с фокусом (см. NoticePresenter).
+    /// </summary>
+    private void ShowAdminNotices(AgentSnapshot s)
+    {
+        var fresh = _notices.Fresh(s);
+        if (fresh.Count == 0) return;
+        var text = NoticeTracker.Combine(fresh);
+        var foreground = NativeWindows.Foreground();
+        var ours = foreground is null || foreground.ProcessId == NativeWindows.OwnPid;
+        var style = NoticePresenter.Choose(ours, NativeWindows.NotificationState());
+        Log.Info($"Сообщение администратора: {fresh.Count} шт., показываем {(style == NoticeStyle.FullScreen ? "на весь экран" : "в углу")}");
+        if (style == NoticeStyle.FullScreen) _noticeWindow.Present(text, foreground?.Handle ?? 0);
+        else _toast.ShowNotice(text);
     }
 
     private static void ClearClipboard()
@@ -143,6 +173,8 @@ public sealed class WindowCoordinator : IDisposable
         _lock.AllowClose = true;
         _launcher.AllowClose = true;
         _toast.Close();
+        _noticeWindow.AllowClose = true;
+        _noticeWindow.Close();
         Dispose();
         Application.Current.Shutdown();
     }
@@ -151,6 +183,7 @@ public sealed class WindowCoordinator : IDisposable
     {
         _poll.Stop();
         _focus.Stop();
+        _watcher.Dispose();
         _kiosk.Dispose();
         _tray.Dispose();
     }

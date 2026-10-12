@@ -63,6 +63,16 @@ def staff_desktop_pc_ids(db: DB, club_id: int, now: datetime) -> set[int]:
     return {pc_id for (pc_id,) in rows}
 
 
+def guest_cabinet_phones(db: DB, club: Club, now: datetime) -> dict[int, str]:
+    """pc_id -> телефон гостя, который вошёл в кабинет на этом ПК (для карты клуба: ПК занят, хотя сессии ещё нет).
+    Устаревшие входы (срок вышел или гость долго молчит) не считаются, как в is_stale. Ничего не закрывает и не пишет."""
+    idle_after = now - timedelta(minutes=club.idle_logout_minutes)
+    rows = db.execute(select(Login.pc_id, Account.phone).join(Account, Account.id == Login.account_id).where(
+        Login.club_id == club.id, Login.pc_id.is_not(None), Login.ended_at.is_(None), Login.expires_at > now,
+        Login.last_seen_at >= idle_after, Account.role == "guest"))
+    return {pc_id: phone for pc_id, phone in rows}
+
+
 def staff_login_active(db: DB, club: Club, pc_id: int, now: datetime) -> bool:
     cur = current_login(db, club, pc_id, now)
     return bool(cur and cur[1].role == "staff")

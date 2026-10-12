@@ -1,15 +1,18 @@
 """Что видит клиент на ПК гостя. ПК определяется по ключу (X-PC-Key), id в URL не нужен."""
-from fastapi import APIRouter, Depends, Query
+from datetime import timedelta
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DB
 
+from .. import config
 from ..db import get_db
 from ..deps import PCContext, pc_context
 from ..errors import ServiceError
 from ..models import Account, CatalogApp, Tariff
 from ..schemas import HardwareIn, ProgramsIn
-from ..services import ads, catalog, covers, fleet, logins, sessions
+from ..services import ads, bookings, catalog, covers, fleet, logins, notices, sessions
 from ..timeutil import utcnow
 from .auth import account_out
 
@@ -59,6 +62,14 @@ def _state(ctx: PCContext, db: DB, banner: int | None):
            "session": sessions.session_out(s, now) if s else None}
     if ctx.pc.maintenance and not s:
         out["message"] = "ПК на обслуживании"
+    elif not s:
+        held = bookings.holding_at(db, ctx.club.id, ctx.pc.id, now)
+        if held and not (account and account.phone == held.phone):     # самому забронировавшему надпись не нужна
+            out["message"] = f"ПК забронирован на {held.starts_at + timedelta(hours=ctx.club.utc_offset):%H:%M}"
+    fresh = notices.deliver(db, ctx.pc, now)         # сообщения администратора: клиент покажет каждое один раз
+    if fresh:
+        out["notices"] = fresh
+        db.commit()                                  # отметка «доставлено»
     return out
 
 
@@ -104,10 +115,14 @@ def agent_ad_image(ad_id: int, ctx: PCContext = Depends(pc_context), db: DB = De
 
 
 @router.get("/apps")
-def apps(ctx: PCContext = Depends(pc_context), db: DB = Depends(get_db)):
-    """Каталог игр и программ для меню гостя. Скрытые записи сюда не попадают."""
+def apps(background: BackgroundTasks, ctx: PCContext = Depends(pc_context), db: DB = Depends(get_db)):
+    """Каталог игр и программ для меню гостя. Скрытые записи сюда не попадают. Если у игры из Steam нет обложки, сервер после ответа сам
+    подтягивает постеры (не чаще раза в 10 минут на клуб): кнопку в админке нажимать не нужно, меню спросит ещё раз через несколько секунд."""
     meta = covers.meta_for_club(db, ctx.club.id)
-    return [catalog.app_out(a, cover=meta.get(a.id)) for a in catalog.list_apps(db, ctx.club.id, active_only=True)]
+    listed = catalog.list_apps(db, ctx.club.id, active_only=True)
+    if config.STEAM_AUTOCOVERS and covers.missing_steam_covers(listed, meta):
+        background.add_task(covers.autofill_steam, ctx.club.id)
+    return [catalog.app_out(a, cover=meta.get(a.id)) for a in listed]
 
 
 @router.get("/apps/{app_id}/cover")

@@ -2,8 +2,11 @@ using System.Text.RegularExpressions;
 
 namespace ClubOS.Shared.Ui;
 
-/// <summary>Что именно запустить: файл или адрес (для Steam), без каких-либо аргументов от гостя.</summary>
-public sealed record LaunchPlan(string FileName, string? WorkingDirectory, bool UseShellExecute);
+/// <summary>
+/// Что именно запустить: файл или адрес (для Steam). Аргументы гость и сервер не задают; единственный, который добавляет клиент, это ключ
+/// приватного режима у известных браузеров (см. PrivateBrowsing).
+/// </summary>
+public sealed record LaunchPlan(string FileName, string? WorkingDirectory, bool UseShellExecute, string? Arguments = null);
 
 /// <summary>
 /// Превращает запись каталога в команду запуска. Проверяет её ещё раз на ПК, хотя сервер уже проверил:
@@ -25,7 +28,7 @@ public static partial class AppLaunch
 
             case "exe" when ExePath().IsMatch(app.LaunchTarget) && !HasOddSegments(app.LaunchTarget):
                 var dir = app.LaunchTarget[..app.LaunchTarget.LastIndexOf('\\')];
-                return new(app.LaunchTarget, dir, false);
+                return new(app.LaunchTarget, dir, false, PrivateBrowsing.ArgumentsFor(app.LaunchTarget));
 
             default:
                 error = "Запись в меню настроена неверно. Сообщите администратору";

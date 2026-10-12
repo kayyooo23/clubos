@@ -1,7 +1,9 @@
 // Окна для работы с одним ПК: добавить ПК, выдать ключ, запустить сессию за гостя. Раньше жили на вкладке «Компьютеры», теперь всё делается на карте клуба.
-import { h, setChildren, badge, openModal, confirmDialog, toast, field, copyText, digitsInput } from '../dom.js';
+import { h, setChildren, badge, openModal, confirmDialog, toast, field, copyText, digitsInput, phoneInput } from '../dom.js';
 import { get, post } from '../api.js';
-import { money, phonePretty, tariffDescribe, minBalance, kindName } from '../format.js';
+import { money, phonePretty, tariffDescribe, minBalance, kindName, minutesText } from '../format.js';
+
+const HOLD_LENGTHS = [60, 120, 180, 240, 360];
 
 /** Ключ ПК показывается один раз: его нужно прописать при установке клиента. */
 export function keyDialog(title, key) {
@@ -53,6 +55,75 @@ export function addPcDialog(done) {
       h('button', { class: 'btn btn-primary', type: 'button', onclick: save }, 'Добавить')],
   });
   name.focus();
+}
+
+const NOTICE_MAX = 300;
+const NOTICE_PHRASES = [
+  'Пожалуйста, постарайтесь вести себя потише.',
+  'Подойдите, пожалуйста, к администратору.',
+  'Напоминаем о правилах клуба.',
+  'Ваш заказ готов, подойдите к стойке.',
+];
+
+/** Сообщение администратора гостю: текст появляется у него на экране поверх всех окон со звуком. Не нужно идти к ПК:
+ * выбрал компьютер на карте, написал (или нажал готовую фразу), отправил. Текст любой, до 300 знаков. */
+export function noticeDialog(pc, done) {
+  const text = h('textarea', { maxLength: NOTICE_MAX, rows: 4, placeholder: 'Текст сообщения', required: true });
+  const counter = h('span', { class: 'small muted' }, `0 / ${NOTICE_MAX}`);
+  const error = h('div', { class: 'error-text', role: 'alert' });
+  const count = () => { counter.textContent = `${text.value.length} / ${NOTICE_MAX}`; };
+  text.addEventListener('input', count);
+  const phrases = h('div', { class: 'row', style: 'flex-wrap:wrap;gap:6px;margin-bottom:10px' },
+    NOTICE_PHRASES.map((p) => h('button', { class: 'btn btn-sm', type: 'button', onclick: () => { text.value = p; count(); text.focus(); } }, p)));
+  const send = async () => {
+    error.textContent = '';
+    const value = text.value.trim();
+    if (!value) { error.textContent = 'Введите текст сообщения'; return; }
+    try {
+      const r = await post(`/api/admin/pcs/${pc.id}/notice`, { text: value });
+      modal.close();
+      toast(r.online ? `Сообщение отправлено на ${pc.name}` : `${pc.name} не на связи: сообщение дойдёт, если связь вернётся в течение двух минут`, r.online ? 'ok' : 'error');
+      if (done) done();
+    } catch (e) { error.textContent = e.message; }
+  };
+  const modal = openModal({
+    title: `Сообщение гостю: ${pc.name}`,
+    content: h('form', { onsubmit: (ev) => { ev.preventDefault(); send(); } },
+      h('p', { class: 'small muted' }, 'Гость увидит сообщение на экране поверх всех окон, со звуком. Выберите готовую фразу или напишите свою.'),
+      phrases, field('Сообщение', text), h('div', { class: 'row' }, h('span', { class: 'grow' }), counter), error),
+    actions: [h('button', { class: 'btn', type: 'button', onclick: () => modal.close() }, 'Отмена'),
+      h('button', { class: 'btn btn-primary', type: 'button', onclick: send }, 'Отправить')],
+  });
+  text.focus();
+}
+
+/** Гость пришёл к стойке и назвал зал: администратор сразу занимает ПК за ним. Это бронь «на сейчас» на номер гостя: ПК виден занятым,
+ * другой гость (в том числе по брони с телефона) на него не сядет и не забронирует. Не сел за 15 минут: ПК освободится сам. */
+export function holdPcDialog(pc, done) {
+  const phone = phoneInput({ required: true });
+  const name = h('input', { maxLength: 80, placeholder: 'необязательно' });
+  const length = h('select', {}, HOLD_LENGTHS.map((m) => h('option', { value: m, selected: m === 120 }, minutesText(m))));
+  const error = h('div', { class: 'error-text', role: 'alert' });
+  const save = async () => {
+    error.textContent = '';
+    if (!phone.value.trim()) { error.textContent = 'Введите телефон гостя'; return; }
+    try {
+      await post('/api/admin/bookings', { pc_id: pc.id, phone: phone.value.trim(), name: name.value.trim() || null,
+        starts_at: new Date().toISOString(), minutes: Number(length.value) });
+      modal.close();
+      toast(`${pc.name} занят для гостя`, 'ok');
+      if (done) done();
+    } catch (e) { error.textContent = e.message; }
+  };
+  const modal = openModal({
+    title: `Занять ${pc.name} для гостя`,
+    content: h('form', { onsubmit: (ev) => { ev.preventDefault(); save(); } },
+      h('p', { class: 'small muted' }, 'ПК сразу станет занятым: другой гость его не займёт и не забронирует. Если гость не сядет за 15 минут, ПК освободится сам.'),
+      field('Телефон гостя', phone), field('Имя', name), field('На сколько', length), error),
+    actions: [h('button', { class: 'btn', type: 'button', onclick: () => modal.close() }, 'Отмена'),
+      h('button', { class: 'btn btn-primary', type: 'button', onclick: save }, 'Занять ПК')],
+  });
+  phone.focus();
 }
 
 /** Запуск сессии сотрудником: сначала гость (по последним цифрам телефона), потом тариф, который он может оплатить. */

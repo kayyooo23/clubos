@@ -256,6 +256,8 @@ tr.dim td:not(:last-child) { opacity: .5; }
 .tile.playing { border-color: var(--accent); border-left-color: var(--accent); }
 .tile.playing .s { color: var(--text); }
 .tile.staff { border-left-color: var(--text); }
+.tile.seated { border-left-color: var(--accent); }
+.tile.seated .s { color: var(--text); }
 .tile.offline { opacity: .55; border-style: dashed; }
 .tile.booked { border-color: var(--text); border-left-color: var(--text); }
 .tile.booked .s { color: var(--text); }

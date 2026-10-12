@@ -55,9 +55,12 @@ public sealed record CartLine(int ProductId, int Qty);
 
 public sealed record TransactionInfo(int Id, int Amount, int BalanceAfter, string Kind, DateTime CreatedAt);
 
-/// <summary>Ответ сервера на /api/agent/state.</summary>
+/// <summary>Сообщение администратора гостю на экран (любой текст, например «Пожалуйста, постарайтесь вести себя потише»). Id нужен, чтобы показать его один раз.</summary>
+public sealed record NoticeInfo(int Id, string Text);
+
+/// <summary>Ответ сервера на /api/agent/state. Notices: свежие сообщения администратора для этого ПК (сервер повторяет их пару минут, показывает клиент один раз).</summary>
 public sealed record ServerState(PcMode Mode, AccountInfo? Account, SessionInfo? Session, string? Message,
-    string? ClubName = null, string? PcName = null, bool? ScanPrograms = null);
+    string? ClubName = null, string? PcName = null, bool? ScanPrograms = null, IReadOnlyList<NoticeInfo>? Notices = null);
 
 /// <summary>
 /// Что служба показывает оверлею. Собирается на каждый запрос «state», поэтому SecondsLeft всегда свежий.
@@ -65,7 +68,7 @@ public sealed record ServerState(PcMode Mode, AccountInfo? Account, SessionInfo?
 /// </summary>
 public sealed record AgentSnapshot(
     bool Connected, PcMode Mode, AccountInfo? Account, SessionInfo? Session, string? Message, int? SecondsLeft,
-    string? ClubName = null, string? PcName = null)
+    string? ClubName = null, string? PcName = null, IReadOnlyList<NoticeInfo>? Notices = null)
 {
     /// <summary>Состояние до первого ответа сервера: ПК закрыт, связи нет.</summary>
     public static AgentSnapshot Booting { get; } = new(false, PcMode.Locked, null, null, null, null);
