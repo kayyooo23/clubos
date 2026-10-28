@@ -3,6 +3,16 @@
 
 const HOUR = 3600 * 1000;
 
+/** 1536 → «1,5 КБ», 40000000000 → «37,3 ГБ»: размеры игр и объём копирования. */
+export function bytesText(n) {
+  const v = Number(n) || 0;
+  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+  let i = 0;
+  let x = v;
+  while (x >= 1024 && i < units.length - 1) { x /= 1024; i += 1; }
+  return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: i === 0 ? 0 : 1 }).format(x)} ${units[i]}`;
+}
+
 export const money = (n) => `${new Intl.NumberFormat('ru-RU').format(Math.round(Number(n) || 0))} ₽`;
 
 /** '2026-10-06T09:11:09.727397' (UTC) → Date */
@@ -104,11 +114,26 @@ export function minutesText(minutes) {
   return m === 0 ? `${h} ч` : `${h} ч ${m} мин`;
 }
 
+export const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+
+/** «Сб, Вс: 150 ₽; Пт: 130 ₽»: дни с особой ценой, сгруппированные по цене (пусто, если цена одна на все дни). */
+export function dayPricesText(t) {
+  const groups = new Map();
+  for (const [day, price] of Object.entries(t.day_prices || {})) {
+    if (!groups.has(price)) groups.set(price, []);
+    groups.get(price).push(Number(day));
+  }
+  return [...groups].map(([price, days]) => `${days.sort((a, b) => a - b).map((d) => WEEKDAYS[d]).join(', ')}: ${money(price)}`).join('; ');
+}
+
 export function tariffDescribe(t) {
-  if (t.kind === 'hourly') return `${money(t.price)} в час, списывается по факту`;
-  if (t.kind === 'package') return `${money(t.price)} за ${minutesText(t.package_minutes || 0)}`;
-  if (t.kind === 'night') return `${money(t.price)}, с ${two(t.night_start)}:00 до ${two(t.night_end)}:00`;
-  return money(t.price);
+  const base = t.base_price ?? t.price;
+  const days = dayPricesText(t);
+  const tail = days ? `. По дням: ${days}` : '';
+  if (t.kind === 'hourly') return `${money(base)} в час, списывается по факту${tail}`;
+  if (t.kind === 'package') return `${money(base)} за ${minutesText(t.package_minutes || 0)}${tail}`;
+  if (t.kind === 'night') return `${money(base)}, с ${two(t.night_start)}:00 до ${two(t.night_end)}:00${tail}`;
+  return money(base) + tail;
 }
 
 /** Сколько должно быть на балансе для старта (как на сервере: для почасового — на 10 минут). */
@@ -123,6 +148,23 @@ const ACTIONS = {
   staff_lock: 'Сотрудник вышел с ПК',
   pc_force_lock: 'Принудительная блокировка ПК',
   pc_notice: 'Сообщение гостю на экран ПК',
+  zone_create: 'Зал добавлен',
+  zone_update: 'Зал изменён',
+  zone_delete: 'Зал удалён',
+  zone_tariffs_copy: 'Тарифы скопированы в зал',
+  tariff_replace: 'Тариф изменён',
+  enroll_code_create: 'Создан код подключения ПК',
+  enroll_code_revoke: 'Код подключения отозван',
+  pc_enrolled: 'ПК подключён по коду',
+  pc_reenrolled: 'ПК подключён повторно (новый ключ)',
+  pc_command: 'Команда ПК',
+  pc_command_cancel: 'Команда ПК отменена',
+  pc_clone_ack: 'Метка «ключ пробовал другой компьютер» снята',
+  sync_start: 'Запущена синхронизация игр',
+  sync_cancel: 'Синхронизация игр отменена',
+  client_update_ok: 'Клиент ПК обновлён до новой версии',
+  client_update_failed: 'Обновление клиента ПК не удалось',
+  client_update_rolled_back: 'Новая версия клиента не заработала, возвращена прежняя',
   pc_key_rotated: 'Смена ключа ПК',
   topup_cash: 'Пополнение наличными',
   adjustment: 'Корректировка баланса',

@@ -1,8 +1,8 @@
 """Что видит клиент на ПК гостя. ПК определяется по ключу (X-PC-Key), id в URL не нужен."""
 from datetime import timedelta
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query
-from fastapi.responses import Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DB
 
@@ -11,8 +11,8 @@ from ..db import get_db
 from ..deps import PCContext, pc_context
 from ..errors import ServiceError
 from ..models import Account, CatalogApp, Tariff
-from ..schemas import HardwareIn, ProgramsIn
-from ..services import ads, bookings, catalog, covers, fleet, logins, notices, sessions
+from ..schemas import VERSION_PATTERN, CommandResultIn, EnrollIn, GamesIn, HardwareIn, ProgramsIn, SyncManifestIn, SyncProgressIn, UpdateResultIn
+from ..services import ads, billing, bookings, catalog, commands, covers, enroll, fleet, logins, notices, releases, sessions, sync, zones
 from ..timeutil import utcnow
 from .auth import account_out
 
@@ -25,6 +25,8 @@ def state(ctx: PCContext = Depends(pc_context), db: DB = Depends(get_db), banner
     out = _state(ctx, db, banner)
     if fleet.scan_requested(ctx.pc):
         out = {**out, "scan_programs": True}
+    if sync.games_scan_requested(ctx.pc):
+        out = {**out, "scan_games": True}           # администратор попросил обновить список игр: служба соберёт и пришлёт его
     return out
 
 
@@ -50,7 +52,7 @@ def _state(ctx: PCContext, db: DB, banner: int | None):
     if cur and cur[1].role == "staff":
         ctx.pc.ads_seen_at = None
         db.commit()
-        return {**names, "mode": "staff_desktop", "account": {"role": "staff"}, "session": None}
+        return _with_commands({**names, "mode": "staff_desktop", "account": {"role": "staff"}, "session": None}, db, ctx.pc, now)
     if s or banner == 0:
         ctx.pc.ads_seen_at = None          # идёт игра или гость у формы входа: баннера на экране нет, показ не считаем
     else:
@@ -70,7 +72,89 @@ def _state(ctx: PCContext, db: DB, banner: int | None):
     if fresh:
         out["notices"] = fresh
         db.commit()                                  # отметка «доставлено»
+    return _with_commands(out, db, ctx.pc, now)
+
+
+def _with_commands(out: dict, db: DB, pc, now) -> dict:
+    """Команды администратора этому ПК (перезагрузить, выключить): служба выполняет их и подтверждает результат. Ключа нет, пока команд нет.
+    Туда же задания синхронизации игр (sync): пока этот ПК участвует в идущем задании, служба получает его параметры и адреса других участников."""
+    pending = commands.deliver(db, pc, now)
+    if pending:
+        out["commands"] = pending
+        db.commit()                                  # отметка «отдана»
+    jobs = sync.assignments_for(db, pc)
+    if jobs:
+        out["sync"] = jobs
     return out
+
+
+@router.post("/enroll")
+def enroll_pc(data: EnrollIn, request: Request, db: DB = Depends(get_db)):
+    """ПК подключается к клубу по коду подключения (его создаёт сотрудник в админке). Ключ ПК и токены не нужны: код и есть доказательство.
+    В ответе ключ этого ПК, он виден только здесь: служба сохраняет его у себя. Тот же компьютер, подключённый повторно, получает новый ключ."""
+    return enroll.enroll(db, data, utcnow(), request.client.host if request.client else None)
+
+
+@router.post("/commands/{command_id}/result")
+def command_result(command_id: int, data: CommandResultIn, ctx: PCContext = Depends(pc_context), db: DB = Depends(get_db)):
+    """Служба на ПК сообщает, выполнила ли команду администратора. Повторное сообщение безвредно."""
+    c = commands.report(db, ctx.pc, command_id, data.ok, data.message, utcnow())
+    db.commit()
+    return {"ok": True, "status": c.status}
+
+
+# ---------- автообновление клиента ----------
+@router.get("/update")
+def update_check(current: str = Query(pattern=VERSION_PATTERN), ctx: PCContext = Depends(pc_context), db: DB = Depends(get_db)):
+    """Служба спрашивает, нет ли для этого ПК новой версии клиента (current: какая стоит сейчас). Заодно сервер запоминает версию ПК.
+    В ответе update: null или сведения для скачивания и проверки (подпись проверяет сама служба)."""
+    releases.record_check(ctx.pc, current, utcnow())
+    r = releases.offer_for(db, ctx.pc, current)
+    db.commit()
+    return {"update": releases.offer_out(r) if r else None}
+
+
+@router.get("/update/package/{release_id}")
+def update_package(release_id: int, ctx: PCContext = Depends(pc_context), db: DB = Depends(get_db)):
+    """Пакет версии (zip). Отдаётся только ПК, до которого дошла очередь выдачи этой версии. Поддерживает докачку (Range)."""
+    r = releases.offerable(db, ctx.pc, release_id)
+    path = releases.final_path(r)
+    if not path.is_file():
+        raise ServiceError(404, "Пакет версии не найден на сервере")
+    return FileResponse(path, media_type="application/zip", filename=f"ClubOS-{r.version}.zip")
+
+
+@router.post("/update/result")
+def update_result(data: UpdateResultIn, ctx: PCContext = Depends(pc_context), db: DB = Depends(get_db)):
+    """Служба сообщает итог обновления: ok, failed или rolled_back (новая версия не заработала, возвращена прежняя). Видно в админке и журнале."""
+    releases.record_result(db, ctx.pc, data, utcnow())
+    db.commit()
+    return {"ok": True}
+
+
+# ---------- синхронизация игр ----------
+@router.post("/games")
+def games(data: GamesIn, ctx: PCContext = Depends(pc_context), db: DB = Depends(get_db)):
+    """Служба присылает игры, найденные в игровой папке этого ПК (при запуске и когда администратор просил обновить список)."""
+    count = sync.set_games(db, ctx.pc, data, utcnow())
+    db.commit()
+    return {"ok": True, "count": count}
+
+
+@router.post("/sync/{job_id}/manifest")
+def sync_manifest(job_id: int, data: SyncManifestIn, ctx: PCContext = Depends(pc_context), db: DB = Depends(get_db)):
+    """Эталонный ПК посчитал список файлов задания и сообщает его sha256: по нему получатели проверяют, что скачали именно этот список."""
+    sync.register_manifest(db, ctx.pc, job_id, data, utcnow())
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/sync/{job_id}/progress")
+def sync_progress(job_id: int, data: SyncProgressIn, ctx: PCContext = Depends(pc_context), db: DB = Depends(get_db)):
+    """Как идут дела у этого ПК в задании (состояние, сколько на месте, сколько скачано, адрес раздачи внутри сети). Отвечает 409, если задание уже закрыто: служба тогда останавливается."""
+    sync.report_progress(db, ctx.pc, job_id, data, utcnow())
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/hardware")
@@ -137,6 +221,8 @@ def agent_app_cover(app_id: int, ctx: PCContext = Depends(pc_context), db: DB = 
 
 @router.get("/tariffs")
 def tariffs(ctx: PCContext = Depends(pc_context), db: DB = Depends(get_db)):
-    return [{"id": t.id, "name": t.name, "kind": t.kind, "price": t.price,
+    """Тарифы для гостя на этом ПК: если у зала ПК есть свои, то только они, иначе общие тарифы клуба."""
+    now = utcnow()
+    return [{"id": t.id, "name": t.name, "kind": t.kind, "price": billing.price_at(t, now, ctx.club.utc_offset),   # сегодняшняя цена (по дню недели)
              "package_minutes": t.package_minutes, "night_start": t.night_start, "night_end": t.night_end}
-            for t in db.scalars(select(Tariff).where(Tariff.club_id == ctx.club.id, Tariff.active))]
+            for t in zones.applicable_tariffs(db, ctx.club.id, ctx.pc.zone_id)]

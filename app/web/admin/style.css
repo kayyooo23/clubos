@@ -88,7 +88,7 @@ input, select, textarea {
 input:hover, select:hover, textarea:hover { border-color: var(--line-strong); }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); outline: none; }
 input::placeholder { color: #6b6b70; }
-input[type="checkbox"] { width: auto; }
+input[type="checkbox"], input[type="radio"] { width: auto; }
 label.check { display: flex; align-items: center; gap: 10px; margin-top: 18px; cursor: pointer; }
 label.check input { width: 20px; height: 20px; accent-color: var(--accent); }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }

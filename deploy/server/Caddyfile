@@ -1,0 +1,8 @@
+{$DOMAIN} {
+	encode gzip
+	# пакеты версий клиента до 400 МБ загружаются в панели платформы
+	request_body {
+		max_size 450MB
+	}
+	reverse_proxy app:8000
+}

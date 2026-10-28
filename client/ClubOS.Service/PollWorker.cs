@@ -2,8 +2,8 @@ using ClubOS.Shared;
 
 namespace ClubOS.Service;
 
-/// <summary>Раз в несколько секунд спрашивает сервер о состоянии ПК (это же heartbeat «ПК на связи»).</summary>
-public sealed class PollWorker(AgentCore core, AgentConfig cfg, ILogger<PollWorker> log) : BackgroundService
+/// <summary>Раз в несколько секунд спрашивает сервер о состоянии ПК (это же heartbeat «ПК на связи») и передаёт исполнителю пришедшие команды.</summary>
+public sealed class PollWorker(AgentCore core, AgentConfig cfg, ILogger<PollWorker> log, CommandRunner? commands = null) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -17,6 +17,8 @@ public sealed class PollWorker(AgentCore core, AgentConfig cfg, ILogger<PollWork
                 if (connected != wasConnected)
                     log.LogInformation(connected ? "Связь с сервером восстановлена" : "Нет связи с сервером");
                 wasConnected = connected;
+                if (commands is not null && core.TakeCommands() is { Count: > 0 } pending)
+                    await commands.HandleAsync(pending, core.Snapshot(), stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception e) { log.LogError(e, "Сбой опроса сервера"); } // служба не должна падать

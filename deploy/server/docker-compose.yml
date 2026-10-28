@@ -1,0 +1,56 @@
+# Сервер ClubOS: приложение + PostgreSQL + Caddy (сам получает и продлевает сертификат HTTPS). Запуск: см. README.md в этой папке.
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: clubos
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?задайте DB_PASSWORD в файле .env}
+      POSTGRES_DB: clubos
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clubos -d clubos"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: ../..
+      dockerfile: deploy/server/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      CLUB_ENV: ${CLUB_ENV:-prod}
+      CLUB_DB_URL: postgresql+psycopg://clubos:${DB_PASSWORD}@db:5432/clubos
+      CLUB_PLATFORM_KEY: ${PLATFORM_KEY:?задайте PLATFORM_KEY в файле .env}
+      CLUB_SMS_PROVIDER: ${SMS_PROVIDER:-console}
+    volumes:
+      - data:/data
+    # порт приложения наружу не открыт: к нему ходит только Caddy из этой же сети (доверие заголовку X-Forwarded-For держится на этом)
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?задайте DOMAIN в файле .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  data:
+  caddy_data:
+  caddy_config:

@@ -1,3 +1,6 @@
+# пакеты версий клиента на диске сервера (автообновление)
+releases/
+
 # базы данных и их копии (данные клуба, ключи ПК)
 *.db
 *.db.bak*
@@ -14,14 +17,24 @@ venv/
 bin/
 obj/
 client/dist/
+
+# C++: сборка нативной части (CMake) и готовая DLL (собирается скриптом client/ClubOS.Native/build.ps1)
+client/ClubOS.Native/build/
+client/ClubOS.Native/out/
 .vs/
 
 # настройки с ключами ПК и локальные секреты
 agent.json
 *.pem
+# открытый ключ подписи версий вшивается в службу: он не секрет и нужен для сборки
+!client/ClubOS.Service/release-public-key.pem
 .env
 .env.*
 
 # временное
 *.log
 *.tmp
+
+# закрытые ключи подписи версий клиента: хранить отдельно от репозитория
+*.key
+!deploy/server/.env.example

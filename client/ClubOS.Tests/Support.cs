@@ -12,12 +12,13 @@ public sealed class FakeServer : HttpMessageHandler
     public const string PcKey = "test-pc-key-123";
     public const string GuestToken = "guest-token-abc";
 
-    public sealed record Seen(HttpMethod Method, string Path, string? Auth, string? PcKey, string Body, string Query = "");
+    public sealed record Seen(HttpMethod Method, string Path, string? Auth, string? PcKey, string Body, string Query = "", string? MachineId = null);
 
     private readonly Dictionary<string, Func<Seen, (int Status, string Json)>> _routes = new();
     private readonly Dictionary<string, Func<Seen, (int Status, byte[] Body)>> _binary = new();
     public List<Seen> Requests { get; } = [];
     public bool Down { get; set; }   // «сервер недоступен»
+    public int Attempts;             // сколько раз к серверу обращались, в том числе когда он «недоступен» (такие запросы в Requests не попадают)
 
     public FakeServer On(string method, string path, int status, string json) =>
         On(method, path, _ => (status, json));
@@ -40,11 +41,13 @@ public sealed class FakeServer : HttpMessageHandler
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        Interlocked.Increment(ref Attempts);
         if (Down) throw new HttpRequestException("сервер недоступен (тест)");
         var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct);
         var seen = new Seen(request.Method, request.RequestUri!.AbsolutePath,
             request.Headers.Authorization?.ToString(),
-            request.Headers.TryGetValues("X-PC-Key", out var k) ? k.First() : null, body, request.RequestUri.Query);
+            request.Headers.TryGetValues("X-PC-Key", out var k) ? k.First() : null, body, request.RequestUri.Query,
+            request.Headers.TryGetValues("X-Machine-Id", out var m) ? m.First() : null);
         lock (Requests) Requests.Add(seen);
         if (_binary.TryGetValue($"{request.Method} {seen.Path}", out var file))
         {

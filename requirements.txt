@@ -3,6 +3,7 @@ uvicorn
 sqlalchemy
 alembic
 argon2-cffi
+psycopg[binary]
 phonenumbers
 httpx
 pytest

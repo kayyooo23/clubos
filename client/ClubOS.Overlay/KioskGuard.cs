@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using ClubOS.Shared.Native;
 
 namespace ClubOS.Overlay;
 
@@ -44,12 +45,25 @@ public sealed class KioskGuard : IDisposable
         _proc = Callback;
     }
 
-    public bool Active => _hook != IntPtr.Zero;
+    // Нативный путь (C++, ClubOS.Native): хук и правило внутри библиотеки; нет библиотеки: хук на C# ниже, правило то же (проверяют тесты).
+    private bool _native;
+
+    public bool Active => _native || _hook != IntPtr.Zero;
 
     /// <summary>Включает перехват с нужным набором. Уже включён: только меняет набор (экран блокировки сменился меню гостя или наоборот).</summary>
     public void Enable(KioskProfile profile = KioskProfile.Lock)
     {
         _profile = profile;
+        if (NativeKiosk.IsAvailable && _hook == IntPtr.Zero)
+        {
+            if (NativeKiosk.Enable(profile == KioskProfile.Lock ? NativeKiosk.Lock : NativeKiosk.Session, _allowExit, () => ExitRequested?.Invoke(), out var error))
+            {
+                _native = true;
+                return;
+            }
+            Log.Error("Не удалось установить перехват клавиш", new System.ComponentModel.Win32Exception(error));
+            return;
+        }
         if (Active) return;
         using var module = Process.GetCurrentProcess().MainModule!;
         _hook = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(module.ModuleName), 0);
@@ -58,6 +72,12 @@ public sealed class KioskGuard : IDisposable
 
     public void Disable()
     {
+        if (_native)
+        {
+            NativeKiosk.Disable();
+            _native = false;
+            return;
+        }
         if (!Active) return;
         UnhookWindowsHookEx(_hook);
         _hook = IntPtr.Zero;

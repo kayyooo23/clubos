@@ -35,20 +35,51 @@ export async function rotateKeyFlow(pc) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-export function addPcDialog(done) {
+/** Что за ПК в зале-шаблоне, одной строкой для подсказки: «Intel Core i7, RTX 4070, 32 ГБ». */
+export function zoneSpecs(z) {
+  return [z.cpu, z.gpu, z.ram, z.monitor, z.peripherals, z.note].filter(Boolean).join(', ');
+}
+
+/** Добавить ПК. Выбираете зал-шаблон, и цены и характеристики берутся у зала: вводить их заново не нужно. Без залов или без шаблона ПК получает общие тарифы клуба. */
+export async function addPcDialog(done) {
+  let zones = [];
+  let tariffs = [];
+  try { [zones, tariffs] = await Promise.all([get('/api/admin/zones'), get('/api/admin/tariffs')]); } catch (e) { toast(e.message, 'error'); return; }
   const name = h('input', { name: 'name', placeholder: 'например, PC-05', maxLength: 50, required: true });
+  const zone = h('select', {}, [h('option', { value: '' }, 'Без шаблона (общие тарифы клуба)'),
+    ...zones.map((z) => h('option', { value: z.id }, `${z.name}${z.pcs ? `, ${z.pcs} ПК` : ''}`))]);
+  if (zones.length) zone.value = String(zones[0].id);
+  const preview = h('div', { class: 'small' });
   const error = h('div', { class: 'error-text', role: 'alert' });
+
+  function syncPreview() {
+    const z = zones.find((x) => String(x.id) === zone.value);
+    const shared = tariffs.filter((t) => t.zone_id == null);
+    const own = z ? tariffs.filter((t) => t.zone_id === z.id) : [];
+    const list = own.length ? own : shared;
+    const lines = [];
+    if (z && zoneSpecs(z)) lines.push(h('div', {}, h('span', { class: 'muted' }, 'Характеристики: '), zoneSpecs(z)));
+    lines.push(h('div', {}, h('span', { class: 'muted' }, own.length ? 'Тарифы зала: ' : 'Общие тарифы клуба: '),
+      list.length ? list.map((t) => `${t.name} ${money(t.price)}`).join(', ') : 'тарифов нет, гости не смогут начать игру'));
+    setChildren(preview, lines);
+  }
+  zone.addEventListener('change', syncPreview);
+  syncPreview();
+
   const save = async () => {
     error.textContent = '';
     if (!name.value.trim()) { error.textContent = 'Введите название ПК'; return; }
     try {
-      const data = await post('/api/admin/pcs', { name: name.value.trim() });
+      const data = await post('/api/admin/pcs', { name: name.value.trim(), zone_id: zone.value === '' ? null : Number(zone.value) });
       modal.close();
       keyDialog(`ПК «${data.name}» добавлен`, data.key);
       if (done) done();
     } catch (e) { error.textContent = e.message; }
   };
-  const form = h('form', { onsubmit: (ev) => { ev.preventDefault(); save(); } }, field('Название', name), error);
+  const form = h('form', { onsubmit: (ev) => { ev.preventDefault(); save(); } },
+    field('Название', name),
+    field('Зал', zone, zones.length ? 'Цены и характеристики берутся у зала. Залы настраиваются в разделе «Залы и тарифы»' : 'Залов пока нет: ПК получит общие тарифы. Залы (VIP, Premium, PS5...) заводятся в разделе «Залы и тарифы»'),
+    preview, error);
   const modal = openModal({
     title: 'Добавить компьютер', content: form,
     actions: [h('button', { class: 'btn', type: 'button', onclick: () => modal.close() }, 'Отмена'),
@@ -201,5 +232,5 @@ export async function startSessionDialog(pc, done) {
     onClose: () => clearTimeout(timer),
   });
   search.focus();
-  try { tariffs = await get('/api/admin/tariffs'); renderTariffs(); } catch (e) { error.textContent = e.message; }
+  try { tariffs = await get(`/api/admin/tariffs?pc_id=${pc.id}`); renderTariffs(); } catch (e) { error.textContent = e.message; }   // только тарифы зала этого ПК
 }

@@ -22,6 +22,7 @@
   <ItemGroup>
     <ProjectReference Include="..\ClubOS.Shared\ClubOS.Shared.csproj" />
     <ProjectReference Include="..\ClubOS.Service\ClubOS.Service.csproj" />
+    <ProjectReference Include="..\ClubOS.Release\ClubOS.Release.csproj" />
     <ProjectReference Include="..\ClubOS.Overlay\ClubOS.Overlay.csproj" />
   </ItemGroup>
 

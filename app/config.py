@@ -2,7 +2,8 @@
 import os
 
 ENV = os.getenv("CLUB_ENV", "dev")  # dev | prod
-DB_URL = os.getenv("CLUB_DB_URL", "sqlite:///./club.db")
+DB_URL = os.getenv("CLUB_DB_URL", "sqlite:///./club.db")   # боевая: postgresql+psycopg://пользователь:пароль@хост:5432/база
+DB_POOL_SIZE = int(os.getenv("CLUB_DB_POOL_SIZE", "10"))   # постоянных соединений с PostgreSQL (ещё вдвое больше в пике)
 
 _DEV_PLATFORM_KEY = "platform-dev-key"
 PLATFORM_KEY = os.getenv("CLUB_PLATFORM_KEY", _DEV_PLATFORM_KEY)
@@ -26,6 +27,15 @@ SMS_PER_CLUB_PER_DAY = 300
 
 STEAM_AUTOCOVERS = os.getenv("CLUB_STEAM_AUTOCOVERS", "1") != "0"   # сервер сам подтягивает постеры Steam играм без обложки (0: только кнопкой в админке)
 STEAM_AUTOCOVERS_EVERY_SECONDS = 600                                 # не чаще раза в столько секунд на клуб, чтобы не нагружать Steam
+
+# Автообновление клиента: пакеты версий лежат на диске сервера. В проде это должна быть постоянная папка (том), а не временная.
+RELEASES_DIR = os.getenv("CLUB_RELEASES_DIR", "./releases")
+MAX_RELEASE_BYTES = 400 * 1024 * 1024      # потолок размера пакета клиента
+UPDATE_ROLLOUT_SALT = "clubos-rollout-v1"  # соль «номерка» ПК: доля ПК для постепенной выдачи версии стабильна и не зависит от других версий
+
+# Резервные копии базы (scripts/backup.py): папка, куда они складываются, и через сколько часов без новой копии панель платформы бьёт тревогу.
+BACKUP_DIR = os.getenv("CLUB_BACKUP_DIR", "./backups")
+BACKUP_MAX_AGE_HOURS = 26
 
 BOOKING_LEAD_MINUTES = 30   # за сколько до начала брони ПК уже держится за гостем (чужая сессия не начнётся)
 BOOKING_GRACE_MINUTES = 15   # сколько бронь «горит» после начала: не пришёл, ПК освобождается

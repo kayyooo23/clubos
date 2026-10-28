@@ -9,6 +9,14 @@ from ..errors import ServiceError
 from ..models import Account, WalletTransaction
 
 
+def lock(db: DB, account: Account) -> None:
+    """Блокирует строку гостя до конца транзакции и подтягивает актуальный баланс (SELECT ... FOR NO KEY UPDATE на PostgreSQL; на SQLite ничего:
+    там запись и так идёт по очереди). Порядок блокировок во всём коде один: сначала аккаунт, потом сессия (и всё остальное). Если брать их
+    вразнобой, два запроса, один из которых пополняет баланс, а другой останавливает сессию, блокируют друг друга (DeadlockDetected).
+    NO KEY UPDATE, а не UPDATE: ключ аккаунта мы не меняем, и запись журнала со ссылкой на аккаунт не ждёт эту блокировку."""
+    db.refresh(account, with_for_update={"key_share": True})
+
+
 def apply(db: DB, account: Account, amount: int, kind: str, now: datetime, *, session_id: int | None = None,
           staff_id: int | None = None, comment: str | None = None) -> WalletTransaction:
     """Меняет баланс на amount (± рубли) и пишет журнал. НЕ коммитит: решает вызывающий,

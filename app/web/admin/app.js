@@ -10,6 +10,7 @@ import * as sessions from './views/sessions.js';
 import * as tariffs from './views/tariffs.js';
 import * as ads from './views/ads.js';
 import * as apps from './views/apps.js';
+import * as sync from './views/sync.js';
 import * as bookings from './views/bookings.js';
 import * as orders from './views/orders.js';
 import * as products from './views/products.js';
@@ -25,8 +26,9 @@ const TABS = [
   { id: 'sessions', title: 'Сессии', view: sessions },
   { id: 'bookings', title: 'Бронирование', view: bookings },
   { id: 'orders', title: 'Заказы', view: orders },
-  { id: 'tariffs', title: 'Тарифы', view: tariffs },
+  { id: 'tariffs', title: 'Залы и тарифы', view: tariffs },
   { id: 'apps', title: 'Игры', view: apps },
+  { id: 'sync', title: 'Синхронизация', view: sync },
   { id: 'products', title: 'Бар', view: products },
   { id: 'ads', title: 'Реклама', view: ads },
   { id: 'report', title: 'Отчёт', view: report },

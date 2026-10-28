@@ -1,11 +1,15 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using ClubOS.Shared.Native;
 using ClubOS.Shared.Ui;
 
 namespace ClubOS.Overlay;
 
-/// <summary>Win32 для оболочки сессии гостя: какие окна открыты, какое в фокусе, вывести вперёд, закрыть, идёт ли чужое полноэкранное приложение.</summary>
+/// <summary>
+/// Win32 для оболочки сессии гостя: какие окна открыты, какое в фокусе, вывести вперёд, закрыть, идёт ли чужое полноэкранное приложение.
+/// Работу делает нативная часть (C++, ClubOS.Native); нет библиотеки: тот же код на C# ниже (методы *Managed), результат одинаковый.
+/// </summary>
 internal static class NativeWindows
 {
     private const int GwOwner = 4, GwlExStyle = -20, WsExToolWindow = 0x80, WmClose = 0x0010, SwRestore = 9, DwmwaCloaked = 14;
@@ -55,10 +59,14 @@ internal static class NativeWindows
     }
 
     /// <summary>Окно в фокусе или null, если фокуса нет.</summary>
-    public static WindowInfo? Foreground() => Describe(GetForegroundWindow(), []);
+    public static WindowInfo? Foreground() => NativeWindowApi.IsAvailable ? NativeWindowApi.Foreground() : ForegroundManaged();
+
+    internal static WindowInfo? ForegroundManaged() => Describe(GetForegroundWindow(), []);
 
     /// <summary>Видимые окна верхнего уровня, самое верхнее первым: без вспомогательных (у них есть владелец), «инструментальных» и скрытых UWP-окон.</summary>
-    public static IReadOnlyList<WindowInfo> TopLevel()
+    public static IReadOnlyList<WindowInfo> TopLevel() => NativeWindowApi.IsAvailable ? NativeWindowApi.TopLevel() : TopLevelManaged();
+
+    internal static IReadOnlyList<WindowInfo> TopLevelManaged()
     {
         var names = new Dictionary<int, string>();
         var result = new List<WindowInfo>();
@@ -79,6 +87,7 @@ internal static class NativeWindows
     /// </summary>
     public static void BringToFront(long handle)
     {
+        if (NativeWindowApi.IsAvailable) { NativeWindowApi.BringToFront(handle); return; }
         var hwnd = new IntPtr(handle);
         if (!IsWindow(hwnd)) return;
         if (IsIconic(hwnd)) ShowWindow(hwnd, SwRestore);
@@ -97,8 +106,14 @@ internal static class NativeWindows
     }
 
     /// <summary>Просит окно закрыться (как крестик). Не убивает процесс: Проводник сам закроет окно.</summary>
-    public static void Close(long handle) => PostMessage(new IntPtr(handle), WmClose, IntPtr.Zero, IntPtr.Zero);
+    public static void Close(long handle)
+    {
+        if (NativeWindowApi.IsAvailable) NativeWindowApi.Close(handle);
+        else PostMessage(new IntPtr(handle), WmClose, IntPtr.Zero, IntPtr.Zero);
+    }
 
     /// <summary>SHQueryUserNotificationState: 2 полноэкранное приложение, 3 полноэкранное приложение Direct3D, 5 можно показывать уведомления. При сбое считаем, что полноэкранного нет.</summary>
-    public static int NotificationState() => SHQueryUserNotificationState(out var state) == 0 ? state : 5;
+    public static int NotificationState() => NativeWindowApi.IsAvailable ? NativeWindowApi.NotificationState() : NotificationStateManaged();
+
+    internal static int NotificationStateManaged() => SHQueryUserNotificationState(out var state) == 0 ? state : 5;
 }

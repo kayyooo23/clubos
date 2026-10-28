@@ -1,8 +1,13 @@
 import os
 import re
 
-os.environ["CLUB_DB_URL"] = "sqlite:///./test_club.db"  # до импорта app: db.py читает адрес при импорте
+# До импорта app: db.py читает адрес при импорте. По умолчанию тесты идут на SQLite, а с CLUB_TEST_DB_URL (например,
+# postgresql+psycopg://postgres@localhost:5433/clubos_test, см. scripts/pg_dev.ps1) на PostgreSQL: так проверяется то же самое на боевой базе.
+os.environ["CLUB_DB_URL"] = os.environ.get("CLUB_TEST_DB_URL", "sqlite:///./test_club.db")
 os.environ.pop("CLUB_ENV", None)
+import tempfile
+_RELEASES_TMP = tempfile.mkdtemp(prefix="clubos-test-releases-")   # пакеты версий клиента: у тестов своя временная папка, настоящая не трогается
+os.environ["CLUB_RELEASES_DIR"] = _RELEASES_TMP
 os.environ["CLUB_STEAM_AUTOCOVERS"] = "0"  # тесты не ходят в Steam сами; фоновую подгрузку проверяет test_covers_autofill, включая её явно
 
 import pytest
@@ -36,6 +41,37 @@ class RecordingSms:
             if p == phone:
                 return re.search(r"\b(\d{6})\b", text).group(1)
         raise AssertionError(f"на {phone} SMS не отправлялось")
+
+
+ON_POSTGRES = engine.dialect.name == "postgresql"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _only_a_test_database():
+    """Каждый тест пересоздаёт все таблицы. На внешней базе это опасно: имя базы должно оканчиваться на _test, иначе тесты не стартуют."""
+    if engine.dialect.name != "sqlite" and not (engine.url.database or "").endswith("_test"):
+        pytest.exit(f"CLUB_TEST_DB_URL указывает на базу «{engine.url.database}»: тесты пересоздают в ней все таблицы. Нужна база с именем на _test.", returncode=2)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _drop_release_files():
+    yield
+    import shutil
+    shutil.rmtree(_RELEASES_TMP, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _empty_release_dir():
+    """Базу каждый тест создаёт заново, а с ней и номера версий клиента: файлы пакетов прошлого теста не должны попадаться."""
+    for f in os.scandir(_RELEASES_TMP):
+        os.unlink(f.path)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_limits():
+    """Счётчики неудачных попыток живут в памяти процесса: у каждого теста свои, иначе один тест мог бы заблокировать другой."""
+    from app.services import ratelimit
+    ratelimit.enroll_failures.reset()
 
 
 @pytest.fixture()

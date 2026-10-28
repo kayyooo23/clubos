@@ -4,7 +4,12 @@ from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from . import config
 
 _is_sqlite = config.DB_URL.startswith("sqlite")
-engine = create_engine(config.DB_URL, connect_args={"check_same_thread": False} if _is_sqlite else {})
+if _is_sqlite:
+    engine = create_engine(config.DB_URL, connect_args={"check_same_thread": False})
+else:
+    # PostgreSQL: запросы сервера идут в пуле нитей, поэтому соединений нужно больше стандартных 5+10;
+    # pool_pre_ping: оборванное соединение (перезапуск базы, сетевой сбой) заменяется, а не роняет запрос
+    engine = create_engine(config.DB_URL, pool_size=config.DB_POOL_SIZE, max_overflow=config.DB_POOL_SIZE * 2, pool_pre_ping=True, pool_recycle=1800)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 

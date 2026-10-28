@@ -28,6 +28,7 @@ public sealed class ProgramsReporter(ServerApi api, AgentCore core, Func<IReadOn
     /// <summary>Один проход цикла: смотрим, не пора ли собрать и отправить список. Возвращает true, если отправили.</summary>
     public async Task<bool> TickAsync(CancellationToken ct)
     {
+        if (!api.HasKey) return false;                                  // ПК ещё подключается по коду
         var requested = core.ProgramsRequested;
         var now = time.GetUtcNow();
         if (!requested && now < _next) return false;

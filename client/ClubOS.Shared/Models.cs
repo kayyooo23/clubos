@@ -58,9 +58,29 @@ public sealed record TransactionInfo(int Id, int Amount, int BalanceAfter, strin
 /// <summary>Сообщение администратора гостю на экран (любой текст, например «Пожалуйста, постарайтесь вести себя потише»). Id нужен, чтобы показать его один раз.</summary>
 public sealed record NoticeInfo(int Id, string Text);
 
-/// <summary>Ответ сервера на /api/agent/state. Notices: свежие сообщения администратора для этого ПК (сервер повторяет их пару минут, показывает клиент один раз).</summary>
+/// <summary>Параметры команды ПК. Force: администратор подтвердил, что команду нужно выполнить даже при идущей сессии гостя.</summary>
+public sealed record CommandPayload(bool Force = false);
+
+/// <summary>Команда администратору для этого ПК (reboot, shutdown). Служба выполняет её сама и присылает результат; оверлей о командах не знает.</summary>
+public sealed record CommandInfo(int Id, string Kind, CommandPayload? Payload = null);
+
+/// <summary>Другой участник синхронизации, у которого можно брать файлы: адрес в локальной сети и роль (source: эталон, target: уже получивший).</summary>
+public sealed record SyncPeer(int PcId, string Url, string Role);
+
+/// <summary>
+/// Часть этого ПК в задании синхронизации игр. Role: source (эталон: считает список файлов и раздаёт) или target (получатель). Status: что сервер знает о нас.
+/// ManifestSha256 пусто, пока эталон не посчитал список файлов. Peers: у кого сейчас можно брать файлы (только для получателя, когда список готов).
+/// </summary>
+public sealed record SyncAssignment(int Id, string Role, string Status, string Token, IReadOnlyList<string> Paths, bool DeleteExtra,
+    string? ManifestSha256 = null, IReadOnlyList<SyncPeer>? Peers = null);
+
+/// <summary>
+/// Ответ сервера на /api/agent/state. Notices: свежие сообщения администратора для этого ПК (сервер повторяет их пару минут, показывает клиент один раз).
+/// Commands: команды, которые ждут выполнения на этом ПК (сервер повторяет неподтверждённую команду, служба защищена от повторного выполнения).
+/// </summary>
 public sealed record ServerState(PcMode Mode, AccountInfo? Account, SessionInfo? Session, string? Message,
-    string? ClubName = null, string? PcName = null, bool? ScanPrograms = null, IReadOnlyList<NoticeInfo>? Notices = null);
+    string? ClubName = null, string? PcName = null, bool? ScanPrograms = null, IReadOnlyList<NoticeInfo>? Notices = null,
+    IReadOnlyList<CommandInfo>? Commands = null, bool? ScanGames = null, IReadOnlyList<SyncAssignment>? Sync = null);
 
 /// <summary>
 /// Что служба показывает оверлею. Собирается на каждый запрос «state», поэтому SecondsLeft всегда свежий.

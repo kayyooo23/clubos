@@ -11,7 +11,7 @@ from .. import config
 from ..errors import ServiceError, commit_or_409
 from ..models import Account, Club, Order, PC, Session, WalletTransaction
 from ..schemas import HardwareIn, LayoutIn, PCPatch
-from . import sessions, shop
+from . import sessions, shop, zones
 
 
 # ---------- правка ПК и карта ----------
@@ -35,6 +35,8 @@ def update_pc(db: DB, club_id: int, pc_id: int, patch: PCPatch, now: datetime) -
         pc.maintenance = bool(fields["maintenance"])
     if "note" in fields:
         pc.note = fields["note"] or None
+    if "zone_id" in fields:
+        zones.assign_pc(db, club_id, pc, fields["zone_id"])     # зал-шаблон: название зала на карте и тарифы берутся у него
     zone = fields.get("zone", pc.zone)
     x, y = fields.get("pos_x", pc.pos_x), fields.get("pos_y", pc.pos_y)
     if (x is None) != (y is None):
@@ -42,6 +44,8 @@ def update_pc(db: DB, club_id: int, pc_id: int, patch: PCPatch, now: datetime) -
     if x is not None and _cell_taken(db, club_id, zone, x, y, except_id=pc.id):
         raise ServiceError(409, "Эта клетка уже занята другим ПК")
     pc.zone, pc.pos_x, pc.pos_y = zone, x, y
+    if "zone" in fields and "zone_id" not in fields:
+        zones.sync_by_name(db, club_id, pc)                     # зал на карте назвали как шаблон: ПК получает его тарифы
     commit_or_409(db, "ПК с таким именем уже есть")
     return pc
 
@@ -54,11 +58,13 @@ def save_layout(db: DB, club_id: int, data: LayoutIn) -> int:
     pcs = {p.id: p for p in db.scalars(select(PC).where(PC.club_id == club_id, PC.id.in_(ids)))}
     if len(pcs) != len(ids):
         raise ServiceError(404, "ПК не найден")
+    by_name = {z.name: z.id for z in zones.list_zones(db, club_id)}
     for item in data.items:
         if (item.pos_x is None) != (item.pos_y is None):
             raise ServiceError(422, "Клетка задаётся колонкой и рядом вместе")
         pc = pcs[item.id]
         pc.zone, pc.pos_x, pc.pos_y = item.zone.strip(), item.pos_x, item.pos_y
+        pc.zone_id = by_name.get(pc.zone)       # ПК перетащили в другой зал: он получает тарифы того зала (нет такого шаблона: общие)
     cells = [(p.zone, p.pos_x, p.pos_y) for p in db.scalars(select(PC).where(PC.club_id == club_id)) if p.pos_x is not None]
     if len(set(cells)) != len(cells):
         db.rollback()

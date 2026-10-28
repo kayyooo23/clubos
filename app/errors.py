@@ -5,10 +5,11 @@ from sqlalchemy.orm import Session as DB
 class ServiceError(Exception):
     """Ошибка бизнес-логики. main.py превращает её в JSON-ответ {"detail": ...} с нужным кодом."""
 
-    def __init__(self, status: int, detail: str):
+    def __init__(self, status: int, detail: str, code: str | None = None):
         super().__init__(detail)
         self.status = status
         self.detail = detail
+        self.code = code          # машинное имя ошибки для клиента на ПК («machine_mismatch»): по тексту решать нельзя
 
 
 def commit_or_409(db: DB, detail: str) -> None:

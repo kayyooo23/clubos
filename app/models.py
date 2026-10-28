@@ -2,7 +2,7 @@
 а запросы всегда фильтруются по club_id, который сервер берёт из ключа ПК или токена (никогда из запроса)."""
 from datetime import date, datetime
 
-from sqlalchemy import (Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, LargeBinary, String, Text,
+from sqlalchemy import (BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, LargeBinary, String, Text,
                         UniqueConstraint, text)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -26,6 +26,43 @@ class Club(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class Zone(Base):
+    """Зал клуба как шаблон для ПК: обычный зал, VIP, Premium, PS5, Duo. У зала свои характеристики (что за ПК и периферия) и свои тарифы,
+    поэтому при добавлении ПК достаточно выбрать зал: цены и характеристики вводить заново не нужно. Название зала же служит залом на карте клуба
+    (pcs.zone). Тарифы зала: tariffs.zone_id (см. services/zones.py)."""
+    __tablename__ = "zones"
+    __table_args__ = (UniqueConstraint("club_id", "name", name="uq_zones_club_name"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    club_id: Mapped[int] = mapped_column(ForeignKey("clubs.id"), index=True)
+    name: Mapped[str] = mapped_column(String(40))
+    cpu: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    gpu: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    ram: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    monitor: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    peripherals: Mapped[str | None] = mapped_column(String(200), nullable=True)   # мышь, клавиатура, наушники, кресло
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=100, server_default="100")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class EnrollCode(Base):
+    """Код подключения ПК: администратор создаёт его, установщик ставит клиент с этим кодом, и ПК при первом запуске сам регистрируется
+    в клубе и получает свой ключ (см. services/enroll.py). В базе только хеш кода; у кода срок, число ПК и (необязательно) зал для новых ПК."""
+    __tablename__ = "enroll_codes"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    club_id: Mapped[int] = mapped_column(ForeignKey("clubs.id"), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    code_hint: Mapped[str] = mapped_column(String(8))          # последние знаки кода: чтобы отличать коды в списке
+    label: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    zone_id: Mapped[int | None] = mapped_column(ForeignKey("zones.id"), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    max_uses: Mapped[int | None] = mapped_column(Integer, nullable=True)   # сколько ПК можно подключить; пусто: сколько угодно до конца срока
+    used_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class PC(Base):
     __tablename__ = "pcs"
     __table_args__ = (UniqueConstraint("club_id", "name", name="uq_pcs_club_name"),)
@@ -36,6 +73,8 @@ class PC(Base):
     last_seen: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # карта клуба: зал и клетка (колонка, ряд) на сетке; без клетки ПК лежит «в стопке» под картой
     zone: Mapped[str] = mapped_column(String(40), default="Общий зал", server_default="Общий зал")
+    # шаблон зала (характеристики и тарифы); pcs.zone всегда равно его названию. Пусто: ПК без шаблона, ему подходят общие тарифы клуба
+    zone_id: Mapped[int | None] = mapped_column(ForeignKey("zones.id"), nullable=True, index=True)
     pos_x: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pos_y: Mapped[int | None] = mapped_column(Integer, nullable=True)
     note: Mapped[str | None] = mapped_column(String(200), nullable=True)  # заметка сотрудника («мышка залита»)
@@ -49,6 +88,21 @@ class PC(Base):
     programs_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     programs_wanted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # администратор попросил обновить список
     ads_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # с какого момента считаем время показа рекламы на этом ПК
+    # отпечаток железа (хеш UUID системы и серийного номера платы), которым клиент подписывает запросы: ключ ПК привязан к своему компьютеру, у скопированного образа он другой
+    machine_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    enrolled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)      # ПК подключён по коду, а не создан вручную
+    enroll_code_id: Mapped[int | None] = mapped_column(ForeignKey("enroll_codes.id"), nullable=True)
+    clone_alert_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)   # с этим ключом пробовал работать другой компьютер (скопированный образ)
+    # версия клиента и итог последнего автообновления (присылает служба): по ним администратор и владелец платформы видят, кто на какой версии
+    client_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    client_version_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    update_status: Mapped[str | None] = mapped_column(String(12), nullable=True)       # ok | failed | rolled_back
+    update_message: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    update_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # игры в игровой папке этого ПК (JSON: путь, название, размер): из них администратор выбирает, что синхронизировать на другие ПК
+    games_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    games_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    games_wanted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)   # администратор попросил обновить список
 
 
 class Tariff(Base):
@@ -65,6 +119,10 @@ class Tariff(Base):
     night_start: Mapped[int | None] = mapped_column(Integer, nullable=True)  # час 0-23
     night_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # зал, которому принадлежит тариф. Пусто: общий тариф клуба. Если у зала есть свои действующие тарифы, ПК зала видят только их, иначе общие
+    zone_id: Mapped[int | None] = mapped_column(ForeignKey("zones.id"), nullable=True, index=True)
+    # цены по дням недели (JSON {"4": 200, "5": 250}: 0 = понедельник ... 6 = воскресенье); дней, которых нет, действует price
+    day_prices: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class CatalogApp(Base):
@@ -155,6 +213,8 @@ class Session(Base):
     # (₽/час, берётся при старте), пока хватает баланса; planned_end тогда = base_end + время, на которое хватает баланса.
     base_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     overtime_price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Цена тарифа, зафиксированная при старте по дню недели (₽/час или за пакет/ночь). Пусто у старых сессий: тогда цена тарифа.
+    price: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Сколько уже списано сверх цены стартового тарифа: продления (пакеты, купленные посреди игры) и доплата по часам, которую пришлось
     # закрыть перед продлением. Итоговая стоимость сессии = цена стартового тарифа + extra_paid + доплата после последнего base_end.
     extra_paid: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
@@ -286,6 +346,27 @@ class Call(Base):
     handled_by: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
 
 
+class PcCommand(Base):
+    """Команда ПК от администратора (перезагрузить, выключить). Служба на ПК забирает её с очередным опросом и подтверждает результат.
+    status: pending - ждёт ПК, sent - отдана ПК, done - выполнена, failed - не вышло, cancelled - отменена или истёк срок.
+    Команда живёт недолго (expires_at): перезагрузка, поставленная вчера, сегодня уже никому не нужна."""
+    __tablename__ = "pc_commands"
+    __table_args__ = (CheckConstraint("status in ('pending', 'sent', 'done', 'failed', 'cancelled')", name="ck_pc_commands_status"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    club_id: Mapped[int] = mapped_column(ForeignKey("clubs.id"), index=True)
+    pc_id: Mapped[int] = mapped_column(ForeignKey("pcs.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(30))
+    payload: Mapped[str | None] = mapped_column(String(500), nullable=True)   # JSON с параметрами (для перезагрузки и выключения пуст)
+    status: Mapped[str] = mapped_column(String(10), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")   # сколько раз отдавалась ПК
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    result: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+
 class PcNotice(Base):
     """Сообщение администратора гостю на экран ПК («Пожалуйста, постарайтесь вести себя потише»). Любой текст до 300 знаков.
     Клиент забирает его с очередным опросом состояния ПК, пока оно свежее (см. services/notices.py); delivered_at - когда ПК получил его в первый раз."""
@@ -378,3 +459,70 @@ class AdStat(Base):
     day: Mapped[date] = mapped_column(Date)
     seconds: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
+
+
+class ClientRelease(Base):
+    """Версия клиента (служба + оверлей) для автообновления. Общая для всех клубов платформы (club_id нет): её выпускает владелец платформы.
+    Пакет (zip) подписан его закрытым ключом, клиент проверяет подпись встроенным открытым ключом: сервер подделать обновление не может.
+    Лежит файл на диске сервера (CLUB_RELEASES_DIR), в базе только сведения. Раздаётся, пока active, и только тем ПК, до которых дошла очередь:
+    club_ids (пусто: все клубы) и rollout_percent (доля ПК, по стабильному «номерку» ПК) позволяют сначала проверить версию на своих клубах."""
+    __tablename__ = "client_releases"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    version: Mapped[str] = mapped_column(String(20), unique=True)      # 1.4.0, до четырёх чисел
+    notes: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    sha256: Mapped[str] = mapped_column(String(64))
+    size: Mapped[int] = mapped_column(Integer)
+    signature: Mapped[str] = mapped_column(String(200))                # base64, ECDSA P-256 по «clubos-release|v1|версия|sha256|размер»
+    file_name: Mapped[str | None] = mapped_column(String(80), nullable=True)   # пусто, пока пакет не загружен
+    uploaded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    rollout_percent: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    club_ids: Mapped[str | None] = mapped_column(String(200), nullable=True)   # «1,5,9»; пусто: все клубы
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class SyncJob(Base):
+    """Синхронизация игр: файлы с эталонного ПК (source) копируются на другие ПК клуба по локальной сети, облачный сервер только координирует.
+    paths это папки и файлы относительно игровой папки ПК (для игры Steam служба сама добавляет и её appmanifest). token нужен только участникам задания:
+    им защищена раздача файлов внутри сети. manifest_* заполняет эталонный ПК, когда посчитал список файлов и хеши блоков; sha256 списка проверяют все получатели.
+    running: идёт; done: все участники закончили (успешно или нет, это видно по строкам); cancelled: отменено или истёк срок."""
+    __tablename__ = "sync_jobs"
+    __table_args__ = (CheckConstraint("status in ('running', 'done', 'cancelled')", name="ck_sync_jobs_status"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    club_id: Mapped[int] = mapped_column(ForeignKey("clubs.id"), index=True)
+    source_pc_id: Mapped[int] = mapped_column(ForeignKey("pcs.id"))
+    paths: Mapped[str] = mapped_column(Text)                                  # JSON-список
+    delete_extra: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")   # убрать у получателей файлы, которых нет на эталоне (точное зеркало)
+    status: Mapped[str] = mapped_column(String(10), default="running", server_default="running")
+    token: Mapped[str] = mapped_column(String(64))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    manifest_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    manifest_files: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    manifest_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+class SyncTarget(Base):
+    """Участник задания синхронизации: эталонный ПК (role source) или получатель (target) и как у него идут дела.
+    Статусы: pending (ещё не начал), scanning (эталон считает список файлов), waiting (получатель ждёт список или пока ПК занят гостем), syncing (копирует),
+    ready (всё на месте, ПК раздаёт файлы другим), failed, cancelled. serve_url: адрес, по которому этот ПК раздаёт файлы внутри сети (только частные адреса)."""
+    __tablename__ = "sync_targets"
+    __table_args__ = (UniqueConstraint("job_id", "pc_id", name="uq_sync_targets_job_pc"),
+                      CheckConstraint("status in ('pending', 'scanning', 'waiting', 'syncing', 'ready', 'failed', 'cancelled')", name="ck_sync_targets_status"),
+                      CheckConstraint("role in ('source', 'target')", name="ck_sync_targets_role"))
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("sync_jobs.id"), index=True)
+    pc_id: Mapped[int] = mapped_column(ForeignKey("pcs.id"), index=True)
+    role: Mapped[str] = mapped_column(String(6))
+    status: Mapped[str] = mapped_column(String(10), default="pending", server_default="pending")
+    bytes_done: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")          # сколько данных уже на месте и проверено
+    bytes_total: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    bytes_fetched: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")       # сколько реально скачано по сети (остальное уже было на ПК)
+    bytes_from_peers: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")    # из скачанного: сколько взято с других получателей, а не с эталона
+    files_done: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    files_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    message: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    serve_url: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

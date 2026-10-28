@@ -24,6 +24,9 @@ if ($PSCmdlet.ShouldProcess('ClubOSAgent', 'Остановить и удалит
         sc.exe delete ClubOSAgent | Out-Null
     }
 }
+if ($PSCmdlet.ShouldProcess('ClubOS Sync', 'Убрать правило брандмауэра синхронизации игр')) {
+    Remove-NetFirewallRule -DisplayName 'ClubOS Sync' -ErrorAction SilentlyContinue
+}
 if ($RemoveFiles) {
     foreach ($dir in @($InstallDir, (Join-Path $env:ProgramData 'ClubOS'))) {
         if ((Test-Path $dir) -and $PSCmdlet.ShouldProcess($dir, 'Удалить папку')) { Remove-Item $dir -Recurse -Force }

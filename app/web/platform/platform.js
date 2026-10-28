@@ -2,6 +2,7 @@
 // Ключ платформы хранится в sessionStorage (пропадает при закрытии вкладки) и уходит только в заголовке запросов к этому же серверу.
 import { h, setChildren, badge, openModal, confirmDialog, toast, field, emptyState, loginScreen } from '/admin/dom.js';
 import { icon } from '/admin/icons.js';
+import { bytesText } from '/admin/format.js';
 
 const KEY = 'clubos.platform.key';
 const root = document.getElementById('app');
@@ -77,7 +78,7 @@ function showLogin(message = '') {
 }
 
 // ---------- каркас ----------
-const TABS = [['ads', 'Реклама'], ['clubs', 'Клубы'], ['report', 'Отчёт по показам']];
+const TABS = [['ads', 'Реклама'], ['clubs', 'Клубы'], ['releases', 'Версии клиента'], ['server', 'Сервер'], ['report', 'Отчёт по показам']];
 let timers = [];
 function stopTimers() { timers.forEach(clearInterval); timers = []; }
 
@@ -103,7 +104,7 @@ function render() {
   for (const link of document.querySelectorAll('.nav a')) link.classList.toggle('active', link.dataset.tab === id);
   const main = document.getElementById('view');
   setChildren(main);
-  ({ ads: adsView, clubs: clubsView, report: reportView })[id](main);
+  ({ ads: adsView, clubs: clubsView, releases: releasesView, server: serverView, report: reportView })[id](main);
   document.title = `${title} | ClubOS платформа`;
 }
 
@@ -320,6 +321,168 @@ function clubsView(main) {
   }
 
   load();
+}
+
+// ---------- версии клиента ----------
+const megabytes = (bytes) => (bytes < 1048576 ? `${Math.max(1, Math.round(bytes / 1024))} КБ` : `${(bytes / 1048576).toLocaleString('ru-RU', { maximumFractionDigits: 1 })} МБ`);
+
+/** Выпуск версий клиента. Версию подписывает владелец своим закрытым ключом (инструмент ClubOS.Release), сервер её только хранит и раздаёт:
+ * подделать обновление он не может, подпись проверяет сама служба на ПК. Версию можно выдавать постепенно: сначала своим клубам или части ПК. */
+function releasesView(main) {
+  const box = h('div', { class: 'table-wrap' });
+  main.append(
+    h('div', { class: 'page-head' }, h('h1', {}, 'Версии клиента'), h('span', { class: 'spacer' }),
+      h('button', { class: 'btn btn-primary', type: 'button', onclick: () => uploadModal() }, 'Загрузить версию')),
+    h('p', { class: 'muted small' }, 'ПК клубов сами проверяют, нет ли новой версии, и ставят её, когда свободны (на экране блокировки, без гостя). Загруженная версия никому не раздаётся, пока вы её не включите. ',
+      'Сначала включите её для своего клуба или для небольшой доли ПК, посмотрите, как она работает, и потом расширьте выдачу. Не заработала на ПК: он сам вернёт прежнюю версию и сообщит об этом.'),
+    box);
+
+  async function load() {
+    let rows;
+    try { rows = await get('/api/platform/releases'); } catch (e) { toast(e.message, 'error'); return; }
+    if (rows.length === 0) { setChildren(box, emptyState('Версий пока нет. Соберите пакет (publish.ps1 -Zip), подпишите его и загрузите сюда.')); return; }
+    setChildren(box, h('table', {},
+      h('thead', {}, h('tr', {}, ['Версия', 'Что нового', 'Размер', 'Состояние', 'Кому раздаётся', 'ПК на версии', ''].map((t, i) => h('th', { class: i === 5 ? 'right' : '' }, t)))),
+      h('tbody', {}, rows.map((r) => h('tr', {},
+        h('td', {}, h('b', {}, r.version), h('div', { class: 'muted small' }, localStamp(r.created_at))),
+        h('td', {}, r.notes || ''),
+        h('td', {}, megabytes(r.size)),
+        h('td', {}, !r.uploaded ? badge('пакет не загружен', 'warn') : r.active ? badge('включена', 'ok') : badge('выключена')),
+        h('td', {}, r.active ? `${r.rollout_percent}% ПК${r.club_ids.length ? `, клубов: ${r.club_ids.length}` : ', всех клубов'}` : ''),
+        h('td', { class: 'right' }, String(r.pcs)),
+        h('td', { class: 'right' },
+          r.uploaded ? h('button', { class: 'btn btn-sm', type: 'button', onclick: () => rolloutModal(r) }, r.active ? 'Выдача' : 'Включить') : null, ' ',
+          r.active ? h('button', { class: 'btn btn-sm', type: 'button', onclick: () => switchOff(r) }, 'Выключить') : null,
+          !r.active ? h('button', { class: 'btn btn-sm', type: 'button', onclick: () => remove(r) }, 'Удалить') : null))))));
+  }
+
+  async function switchOff(r) {
+    try { await patch(`/api/platform/releases/${r.id}`, { active: false }); toast(`Версия ${r.version} выключена: новым ПК она больше не раздаётся`, 'ok'); load(); } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function remove(r) {
+    const ok = await confirmDialog({ title: `Удалить версию ${r.version}?`, text: 'Пакет будет удалён с сервера. ПК, которые уже на этой версии, продолжат работать.', okText: 'Удалить', danger: true });
+    if (!ok) return;
+    try { await del(`/api/platform/releases/${r.id}`); toast('Версия удалена', 'ok'); load(); } catch (e) { toast(e.message, 'error'); }
+  }
+
+  /** Кому выдавать: доля ПК и клубы. Пустой выбор клубов: все клубы. */
+  async function rolloutModal(r) {
+    let clubs = [];
+    try { clubs = await get('/api/platform/clubs'); } catch (e) { toast(e.message, 'error'); return; }
+    const percent = h('input', { type: 'number', min: 0, max: 100, step: 1, value: r.active ? r.rollout_percent : 10, required: true });
+    const picked = new Set(r.club_ids);
+    const list = h('div', { class: 'pick-list' }, clubs.map((c) => {
+      const check = h('input', { type: 'checkbox', checked: picked.has(c.id) });
+      check.addEventListener('change', () => { if (check.checked) picked.add(c.id); else picked.delete(c.id); });
+      return h('label', { class: 'pick' }, check, h('span', { class: 'grow' }, h('b', {}, c.name), ' ', h('span', { class: 'muted small' }, c.slug)));
+    }));
+    const error = h('div', { class: 'error-text', role: 'alert' });
+    async function save() {
+      const value = Number(percent.value);
+      if (!Number.isInteger(value) || value < 0 || value > 100) { error.textContent = 'Доля: целое число от 0 до 100'; return; }
+      try {
+        await patch(`/api/platform/releases/${r.id}`, { active: true, rollout_percent: value, club_ids: [...picked] });
+        modal.close();
+        toast(`Версия ${r.version} включена: ${value}% ПК`, 'ok');
+        load();
+      } catch (e) { error.textContent = e.message; }
+    }
+    const modal = openModal({
+      title: `Выдача версии ${r.version}`,
+      content: h('form', { onsubmit: (ev) => { ev.preventDefault(); save(); } },
+        field('Доля ПК, %', percent, '0 никому, 100 всем выбранным клубам. ПК выбираются по стабильному номерку: при увеличении доли новые ПК добавляются к уже получившим.'),
+        field('Клубы', list, 'Ничего не отмечено: все клубы. Отметьте свои клубы, чтобы сначала проверить версию у себя.'), error),
+      actions: [h('button', { class: 'btn', type: 'button', onclick: () => modal.close() }, 'Отмена'), h('button', { class: 'btn btn-primary', type: 'button', onclick: save }, 'Сохранить и включить')],
+    });
+  }
+
+  function uploadModal() {
+    const pack = h('input', { type: 'file', accept: '.zip,application/zip' });
+    const signed = h('input', { type: 'file', accept: '.json,application/json' });
+    const notes = h('input', { maxLength: 1000, placeholder: 'что нового (необязательно)' });
+    const error = h('div', { class: 'error-text', role: 'alert' });
+    const send = h('button', { class: 'btn btn-primary', type: 'button', onclick: () => upload() }, 'Загрузить');
+    async function upload() {
+      error.textContent = '';
+      if (!pack.files[0] || !signed.files[0]) { error.textContent = 'Выберите оба файла: пакет .zip и файл .release.json'; return; }
+      let release;
+      try { release = JSON.parse(await signed.files[0].text()); } catch { error.textContent = 'Файл .release.json не читается'; return; }
+      if (pack.files[0].size !== release.size) { error.textContent = 'Размер пакета не совпадает с подписанным: это не тот файл'; return; }
+      send.disabled = true;
+      send.textContent = 'Загружается...';
+      let created;
+      try {
+        created = await post('/api/platform/releases', { version: release.version, sha256: release.sha256, size: release.size, signature: release.signature,
+          notes: notes.value.trim() || release.notes || null, rollout_percent: 0 });
+        const response = await fetch(`/api/platform/releases/${created.id}/package`, { method: 'PUT', headers: { 'X-Platform-Key': getKey(), 'Content-Type': 'application/zip' }, body: pack.files[0] });
+        if (!response.ok) {
+          let detail = '';
+          try { detail = (await response.json()).detail; } catch { /* не JSON */ }
+          throw new ApiError(typeof detail === 'string' && detail ? detail : `Не удалось загрузить пакет (${response.status})`, response.status);
+        }
+        modal.close();
+        toast(`Версия ${release.version} загружена. Включите её, когда будете готовы`, 'ok');
+      } catch (e) {
+        error.textContent = e.message;
+        if (created) { try { await del(`/api/platform/releases/${created.id}`); } catch { /* останется незавершённая запись, её можно удалить в списке */ } }
+      }
+      send.disabled = false;
+      send.textContent = 'Загрузить';
+      load();
+    }
+    const modal = openModal({
+      title: 'Загрузить версию клиента',
+      content: h('div', {},
+        h('p', { class: 'small muted' }, 'Нужны два файла из сборки: пакет ClubOS-1.2.0.zip и подпись ClubOS-1.2.0.release.json (её выдаёт инструмент ClubOS.Release командой sign).'),
+        field('Пакет (.zip)', pack), field('Подпись (.release.json)', signed), field('Что нового', notes), error),
+      actions: [h('button', { class: 'btn', type: 'button', onclick: () => modal.close() }, 'Закрыть'), send],
+    });
+  }
+
+  load();
+}
+
+// ---------- сервер ----------
+const UPTIME = (s) => (s >= 86400 ? `${Math.floor(s / 86400)} сут ${Math.floor((s % 86400) / 3600)} ч` : s >= 3600 ? `${Math.floor(s / 3600)} ч ${Math.floor((s % 3600) / 60)} мин` : `${Math.floor(s / 60)} мин`);
+
+/** Здоровье сервера для владельца: жива ли база, соответствует ли ей схема, сколько ПК на связи и главное: делаются ли резервные копии. Потеря базы это потеря денег гостей, поэтому предупреждение о копиях видно сразу. */
+function serverView(main) {
+  const box = h('div', {});
+  main.append(
+    h('div', { class: 'page-head' }, h('h1', {}, 'Сервер')),
+    h('p', { class: 'muted small' }, 'Состояние самого сервера: база, схема, ПК на связи и резервные копии. Для автоматической проверки (хостинг, внешний мониторинг) есть адрес /api/health: он отвечает 200, когда всё в порядке, и 503, когда нет.'),
+    box);
+
+  const row = (k, v) => [h('dt', {}, k), h('dd', {}, v)];
+  const card = (title, ...content) => h('section', { style: 'border:2px solid var(--line, #333);padding:14px 16px;margin-bottom:14px' }, h('h2', { style: 'margin-top:0' }, title), ...content);
+
+  async function load() {
+    let s;
+    try { s = await get('/api/platform/status'); } catch (e) { toast(e.message, 'error'); return; }
+    const schema = s.schema;
+    const schemaText = schema.state === 'ok' ? `актуальна (миграция ${schema.current})` : schema.state === 'outdated'
+      ? `СТАРАЯ: в базе ${schema.current}, нужна ${schema.head}. Выполните alembic upgrade head` : 'не определена (нет таблицы версий)';
+    const b = s.backups;
+    const last = b.files[0];
+    setChildren(box,
+      card('Состояние', h('p', {}, s.health.ok ? badge('работает', 'ok') : badge('есть проблемы', 'danger'), ' ', s.env === 'prod' ? badge('боевой режим', 'ok') : badge('режим разработки', 'warn')),
+        h('dl', { class: 'kv' }, ...row('База', `${s.db.kind === 'postgres' ? 'PostgreSQL' : 'SQLite'}${s.db.size_bytes != null ? `, ${bytesText(s.db.size_bytes)}` : ''}`),
+          ...row('Схема базы', schemaText), ...row('Сервер работает', UPTIME(s.uptime_seconds)))),
+      card('Клубы и ПК', h('dl', { class: 'kv' }, ...row('Клубов', `${s.clubs.total}, активных ${s.clubs.active}`), ...row('ПК на связи', `${s.pcs.online} из ${s.pcs.total}`),
+        ...row('Идёт сессий', String(s.sessions_active)))),
+      card('Резервные копии',
+        b.warning ? h('div', { class: 'warn-box', style: 'margin:0 0 12px' }, b.warning) : h('p', {}, badge('копии делаются', 'ok'), last ? ` Последняя: ${localStamp(last.at)} (${b.age_hours} ч назад)` : ''),
+        h('dl', { class: 'kv' }, ...row('Папка копий', b.dir), ...row('Свободно на диске', b.disk_free != null ? bytesText(b.disk_free) : 'неизвестно'),
+          ...row('Последняя попытка', b.last_status ? `${b.last_status.message} (${localStamp(b.last_status.at)})` : 'не было')),
+        b.files.length ? h('div', { class: 'table-wrap', style: 'margin-top:10px' }, h('table', {}, h('thead', {}, h('tr', {}, ['Копия', 'Когда', 'Размер'].map((t) => h('th', {}, t)))),
+          h('tbody', {}, b.files.map((f) => h('tr', {}, h('td', { class: 'mono small' }, f.name), h('td', {}, localStamp(f.at)), h('td', {}, bytesText(f.size))))))) : null,
+        h('p', { class: 'small muted', style: 'margin-top:10px' }, 'Копию сервер не делает сам: её снимает по расписанию команда python -m scripts.backup (см. deploy/server/README.md). Копия на том же диске не спасает от потери диска: настройте вторую папку или выгрузку в облако.')));
+  }
+
+  load();
+  const timer = setInterval(() => { if (!document.hidden) load(); }, 10000);
+  timers.push(timer);
 }
 
 // ---------- отчёт ----------

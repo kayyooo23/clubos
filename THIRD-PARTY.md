@@ -7,4 +7,6 @@
 | Шрифт **Manrope** (The Manrope Project Authors) | `client/ClubOS.Overlay/Fonts/` (статические начертания для WPF), `app/web/admin/fonts/Manrope.ttf` (переменный шрифт для админки и панели платформы) | SIL Open Font License 1.1, текст рядом: `OFL.txt` |
 | Значки **Phosphor Icons**, стиль Regular (Phosphor Icons) | `client/ClubOS.Overlay/Icons.xaml` (меню гостя), `app/web/admin/icons.js` (меню админки) | MIT |
 
+Ещё один набор нужен только разработчику: **GoogleTest** (Google, лицензия BSD-3-Clause) скачивается CMake при сборке тестов нативной части (`client/ClubOS.Native`) и в продукт не попадает. Сама нативная библиотека пользуется только системными `bcrypt.dll` и `kernel32.dll` Windows.
+
 Шрифт можно использовать, копировать и встраивать в продукт, в том числе коммерческий; нельзя продавать сам шрифт отдельно и оставлять его под тем же названием после изменений. Значки можно использовать свободно при сохранении лицензии MIT.

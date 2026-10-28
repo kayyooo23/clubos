@@ -1,0 +1,8 @@
+<Project>
+
+  <!-- Версия клиента для всех проектов. publish.ps1 подставляет настоящую: -p:Version=1.2.0. Её же служба сообщает серверу и сравнивает с версией обновления. -->
+  <PropertyGroup>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+</Project>

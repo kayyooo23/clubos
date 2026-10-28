@@ -25,6 +25,7 @@ from .timeutil import utcnow
 
 platform_key_header = APIKeyHeader(name="X-Platform-Key", auto_error=False)
 pc_key_header = APIKeyHeader(name="X-PC-Key", auto_error=False)
+machine_header = APIKeyHeader(name="X-Machine-Id", auto_error=False)   # отпечаток железа ПК: ключ работает только на своём компьютере
 bearer = HTTPBearer(auto_error=False)  # в /docs: кнопка Authorize -> вставить токен
 
 BAD_LOGIN = "Вход недействителен, войдите заново"
@@ -62,12 +63,23 @@ def platform_only(key: str | None = Security(platform_key_header)) -> None:
         raise ServiceError(401, "Неверный ключ платформы")
 
 
-def pc_context(key: str | None = Security(pc_key_header), db: DB = Depends(get_db)) -> PCContext:
+def pc_context(key: str | None = Security(pc_key_header), machine: str | None = Security(machine_header),
+               db: DB = Depends(get_db)) -> PCContext:
     if not key:
         raise ServiceError(401, "Нужен ключ ПК (заголовок X-PC-Key)")
     pc = db.scalar(select(PC).where(PC.key_hash == hash_secret(key)))
     if not pc:
         raise ServiceError(401, "Неверный ключ ПК")
+    if machine:
+        machine = machine.strip()[:64]
+        if pc.machine_id is None:                          # железо ПК увидели впервые (ПК создан вручную): запоминаем
+            pc.machine_id = machine
+            db.commit()
+        elif not hmac.compare_digest(pc.machine_id.encode(), machine.encode()):
+            # тот же ключ предъявил другой компьютер: скопированный образ диска. Ему отказ, а у администратора отметка на ПК.
+            pc.clone_alert_at = utcnow()
+            db.commit()
+            raise ServiceError(409, "Этот ключ ПК привязан к другому компьютеру. Подключите этот ПК заново по коду подключения", code="machine_mismatch")
     return PCContext(club=db.get(Club, pc.club_id), pc=pc)
 
 

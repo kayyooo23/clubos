@@ -7,4 +7,11 @@
     <RootNamespace>ClubOS.Shared</RootNamespace>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- нативная часть (C++, client/ClubOS.Native, сборка: ClubOS.Native\build.ps1): если собрана, ложится рядом со всеми программами, которые ссылаются на Shared
+         (служба, оверлей, тесты); нет, программы работают на C# (см. Native/ClubosNative.cs) -->
+    <None Include="..\ClubOS.Native\out\clubos_native.dll" Link="clubos_native.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          Condition="Exists('..\ClubOS.Native\out\clubos_native.dll')" />
+  </ItemGroup>
+
 </Project>

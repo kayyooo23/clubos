@@ -1,6 +1,8 @@
 """Управление клубами — только для владельца платформы (ключ X-Platform-Key)."""
 from datetime import date, timedelta
 
+import hashlib
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
 from sqlalchemy import func, select
@@ -10,8 +12,8 @@ from ..db import get_db
 from ..deps import platform_only
 from ..errors import ServiceError
 from ..models import Ad, AdStat, Club
-from ..schemas import AdIn, AdPatch, ClubAdsIn, ClubIn, ClubStatusIn, CopyAppsIn, StaffPasswordResetIn
-from ..services import accounts, ads, audit, catalog, clubs, images
+from ..schemas import AdIn, AdPatch, ClubAdsIn, ClubIn, ClubStatusIn, CopyAppsIn, ReleaseIn, ReleasePatch, StaffPasswordResetIn
+from ..services import accounts, ads, audit, catalog, clubs, images, ops, releases
 from ..timeutil import utcnow
 
 router = APIRouter(prefix="/api/platform", tags=["платформа"], dependencies=[Depends(platform_only)])
@@ -27,6 +29,12 @@ def create_club(data: ClubIn, db: DB = Depends(get_db)):
     club = clubs.create_club_with_owner(db, data.slug, data.name, data.utc_offset,
                                         data.owner_phone, data.owner_password, utcnow())
     return club_out(club)
+
+
+@router.get("/status")
+def server_status(db: DB = Depends(get_db)):
+    """Состояние сервера для владельца платформы: версия схемы базы, клубы и ПК на связи, размер базы, резервные копии и предупреждения."""
+    return ops.status(db, utcnow())
 
 
 @router.get("/clubs")
@@ -143,3 +151,60 @@ def set_club_ads(club_id: int, data: ClubAdsIn, db: DB = Depends(get_db)):
     db.commit()
     return club_out(club)
 
+
+
+# ---------- версии клиента (автообновление) ----------
+@router.get("/releases")
+def list_releases(db: DB = Depends(get_db)):
+    """Версии клиента и сколько ПК сейчас работает на каждой."""
+    return releases.list_out(db)
+
+
+@router.post("/releases")
+def create_release(data: ReleaseIn, db: DB = Depends(get_db)):
+    """Завести версию: сведения из файла sign-release.ps1. Версия не раздаётся, пока не загружен пакет и она не включена."""
+    r = releases.create(db, data, utcnow())
+    db.commit()
+    return releases.release_out(r)
+
+
+@router.put("/releases/{release_id}/package")
+async def put_release_package(release_id: int, request: Request, db: DB = Depends(get_db)):
+    """Загрузить пакет версии: тело запроса это сам zip. Размер и sha256 должны совпасть с заявленными при создании версии. Файл пишется на диск потоком."""
+    r = releases.get(db, release_id)
+    releases.check_can_upload(r)
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) != r.size:
+        raise ServiceError(422, f"Размер файла {declared} не совпадает с заявленным ({r.size})")
+    releases.release_dir().mkdir(parents=True, exist_ok=True)
+    part = releases.part_path(r)
+    digest, size = hashlib.sha256(), 0
+    try:
+        with open(part, "wb") as out:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > r.size:
+                    raise ServiceError(422, "Файл больше заявленного размера")
+                digest.update(chunk)
+                out.write(chunk)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    releases.finish_upload(db, r, part, digest.hexdigest(), size, utcnow())
+    db.commit()
+    return releases.release_out(r)
+
+
+@router.patch("/releases/{release_id}")
+def update_release(release_id: int, data: ReleasePatch, db: DB = Depends(get_db)):
+    """Включить или выключить версию, поменять долю ПК (rollout_percent) и список клубов (club_ids), заметку."""
+    r = releases.patch(db, release_id, data)
+    db.commit()
+    return releases.release_out(r)
+
+
+@router.delete("/releases/{release_id}")
+def delete_release(release_id: int, db: DB = Depends(get_db)):
+    releases.delete(db, release_id)
+    db.commit()
+    return {"ok": True}

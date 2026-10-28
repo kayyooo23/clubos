@@ -1,5 +1,6 @@
 """Вся логика денег и времени тут, отдельно от API — так её легко тестировать.
 Часовой пояс у каждого клуба свой, поэтому utc_offset (часы от UTC) передаётся параметром."""
+import json
 import math
 from datetime import datetime, timedelta
 
@@ -26,15 +27,44 @@ def night_end_time(t: Tariff, now: datetime, utc_offset: int) -> datetime:
     return end - timedelta(hours=utc_offset)
 
 
-def hourly_limit_end(t: Tariff, started_at: datetime, balance: int) -> datetime:
+def day_prices(t: Tariff) -> dict[int, int]:
+    """Цены по дням недели из тарифа: {0: цена в понедельник, ..., 6: цена в воскресенье}; дней, которых нет, действует t.price."""
+    if not t.day_prices:
+        return {}
+    try:
+        return {int(k): int(v) for k, v in json.loads(t.day_prices).items() if 0 <= int(k) <= 6 and int(v) > 0}
+    except (ValueError, TypeError, AttributeError):
+        return {}
+
+
+def dump_day_prices(prices: dict[int, int] | None) -> str | None:
+    return json.dumps({str(k): v for k, v in sorted(prices.items())}) if prices else None
+
+
+def price_at(t: Tariff, now: datetime, utc_offset: int) -> int:
+    """Цена тарифа на момент now: по дню недели времени клуба (ночной тариф, начатый после полуночи, считается по новому дню)."""
+    return day_prices(t).get(to_local(now, utc_offset).weekday(), t.price)
+
+
+def tariff_prices(t: Tariff, now: datetime, utc_offset: int) -> dict:
+    """Цены тарифа для показа: price = сегодняшняя, base_price = обычная, day_prices = {день: цена} только для отличающихся дней."""
+    return {"price": price_at(t, now, utc_offset), "base_price": t.price, "day_prices": {str(k): v for k, v in day_prices(t).items()}}
+
+
+def session_price(s: Session) -> int:
+    """Цена тарифа, по которой идёт сессия: зафиксирована при старте (у старых сессий это цена тарифа)."""
+    return s.price or s.tariff.price
+
+
+def hourly_limit_end(t: Tariff, started_at: datetime, balance: int, price: int | None = None) -> datetime:
     """Когда у почасовой сессии кончатся деньги: на balance рублей хватает balance*60/price минут от старта.
     Пересчитывается при каждом пополнении во время игры, поэтому гость может пополнить баланс и играть дальше."""
-    return started_at + timedelta(seconds=balance * 3600 // t.price)
+    return started_at + timedelta(seconds=balance * 3600 // (price or t.price))
 
 
-def min_hourly_balance(t: Tariff) -> int:
+def min_hourly_balance(t: Tariff, price: int | None = None) -> int:
     """Минимум на балансе для старта почасового тарифа (хватает на MIN_HOURLY_MINUTES минут)."""
-    return math.ceil(t.price * config.MIN_HOURLY_MINUTES / 60)
+    return math.ceil((price or t.price) * config.MIN_HOURLY_MINUTES / 60)
 
 
 def base_end_time(t: Tariff, start: datetime, utc_offset: int) -> datetime | None:
@@ -52,13 +82,13 @@ def overtime_limit_end(base_end: datetime, balance: int, rate: int) -> datetime:
     return base_end + timedelta(seconds=max(balance, 0) * 3600 // rate)
 
 
-def compute_planned_end(t: Tariff, start: datetime, utc_offset: int, balance: int | None = None) -> datetime | None:
+def compute_planned_end(t: Tariff, start: datetime, utc_offset: int, balance: int | None = None, price: int | None = None) -> datetime | None:
     if t.kind == "package":
         return start + timedelta(minutes=t.package_minutes)
     if t.kind == "night":
         return night_end_time(t, start, utc_offset)
     if balance is not None:  # hourly: ограничен балансом гостя
-        return hourly_limit_end(t, start, balance)
+        return hourly_limit_end(t, start, balance, price)
     return None  # hourly без баланса — без ограничения
 
 
@@ -78,14 +108,14 @@ def in_overtime(s: Session, now: datetime) -> bool:
 def compute_cost(s: Session, now: datetime) -> int:
     t = s.tariff
     if t.kind in ("package", "night"):
-        return t.price + (s.extra_paid or 0) + overtime_cost(s, now)
+        return session_price(s) + (s.extra_paid or 0) + overtime_cost(s, now)
     end = s.ended_at or now
     if s.planned_end:
         end = min(end, s.planned_end)
     # Считаем целыми числами (микросекунды), а не float: иначе на «круглых» границах выходит 31.000000000000004 → 32 ₽
     # при балансе 31 ₽. Время идёт непрерывно, стоимость пропорциональна времени, округление вверх до рубля.
     micros = max((end - s.started_at) // timedelta(microseconds=1), 0)
-    return -(-micros * t.price // 3_600_000_000)
+    return -(-micros * session_price(s) // 3_600_000_000)
 
 
 def is_expired(s: Session, now: datetime) -> bool:

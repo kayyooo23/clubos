@@ -13,7 +13,193 @@ Phone = Annotated[str, AfterValidator(normalize_phone)]  # любой форма
 
 
 class PCIn(BaseModel):
+    """Новый ПК. zone_id: зал-шаблон (цены и характеристики берутся у зала); без него ПК без шаблона, ему подходят общие тарифы клуба."""
     name: str = Field(min_length=1, max_length=50)
+    zone_id: int | None = None
+
+
+def _clean_text(v: str | None) -> str | None:
+    v = (v or "").strip()
+    return v or None
+
+
+class ZoneIn(BaseModel):
+    """Зал-шаблон: название и характеристики ПК этого зала. Все характеристики необязательны: для PS5 или Duo достаточно строки в «заметке»."""
+    name: str = Field(min_length=1, max_length=40)
+    cpu: str | None = Field(default=None, max_length=100)
+    gpu: str | None = Field(default=None, max_length=100)
+    ram: str | None = Field(default=None, max_length=100)
+    monitor: str | None = Field(default=None, max_length=100)
+    peripherals: str | None = Field(default=None, max_length=200)
+    note: str | None = Field(default=None, max_length=200)
+    sort_order: int = Field(default=100, ge=0, le=1000)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("название зала не может быть пустым")
+        return v
+
+    @field_validator("cpu", "gpu", "ram", "monitor", "peripherals", "note")
+    @classmethod
+    def strip_text(cls, v: str | None) -> str | None:
+        return _clean_text(v)
+
+
+class ZonePatch(BaseModel):
+    """Правка зала: приходит только то, что меняем (пустая строка стирает характеристику)."""
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=40)
+    cpu: str | None = Field(default=None, max_length=100)
+    gpu: str | None = Field(default=None, max_length=100)
+    ram: str | None = Field(default=None, max_length=100)
+    monitor: str | None = Field(default=None, max_length=100)
+    peripherals: str | None = Field(default=None, max_length=200)
+    note: str | None = Field(default=None, max_length=200)
+    sort_order: int | None = Field(default=None, ge=0, le=1000)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            raise ValueError("название зала не может быть пустым")
+        return v
+
+    @field_validator("cpu", "gpu", "ram", "monitor", "peripherals", "note")
+    @classmethod
+    def strip_text(cls, v: str | None) -> str | None:
+        return _clean_text(v)
+
+
+class EnrollCodeIn(BaseModel):
+    """Новый код подключения ПК: на сколько дней, сколько ПК можно подключить (пусто: без ограничения) и в какой зал попадут новые ПК."""
+    label: str | None = Field(default=None, max_length=80)
+    days: int = Field(default=7, ge=1, le=90)
+    max_uses: int | None = Field(default=None, ge=1, le=1000)
+    zone_id: int | None = None
+
+    @field_validator("label")
+    @classmethod
+    def clean_label(cls, v: str | None) -> str | None:
+        return _clean_text(v)
+
+
+class EnrollIn(BaseModel):
+    """ПК просит подключить его к клубу по коду. machine_id: отпечаток железа (хеш MAC-адреса), hostname: имя компьютера для названия ПК."""
+    code: str = Field(min_length=4, max_length=40)
+    machine_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{8,64}$")
+    hostname: str | None = Field(default=None, max_length=60)
+
+
+VERSION_PATTERN = r"^\d{1,4}\.\d{1,4}\.\d{1,4}(\.\d{1,4})?$"
+
+
+class ReleaseIn(BaseModel):
+    """Новая версия клиента: сведения из файла, который выдаёт sign-release.ps1 (версия, отпечаток и размер пакета, подпись). Сам пакет грузится отдельно."""
+    version: str = Field(pattern=VERSION_PATTERN)
+    notes: str | None = Field(default=None, max_length=1000)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size: int = Field(ge=1, le=config.MAX_RELEASE_BYTES)
+    signature: str = Field(min_length=40, max_length=200, pattern=r"^[A-Za-z0-9+/=]+$")
+    rollout_percent: int = Field(default=0, ge=0, le=100)
+    club_ids: list[int] | None = Field(default=None, max_length=30)
+
+
+class ReleasePatch(BaseModel):
+    notes: str | None = Field(default=None, max_length=1000)
+    active: bool | None = None
+    rollout_percent: int | None = Field(default=None, ge=0, le=100)
+    club_ids: list[int] | None = Field(default=None, max_length=30)   # пустой список: снова все клубы
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class UpdateResultIn(BaseModel):
+    """Итог обновления, который присылает служба: ok (новая версия заработала), failed (не скачалась или не прошла проверку), rolled_back (новая версия не заработала, вернули прежнюю)."""
+    version: str = Field(pattern=VERSION_PATTERN)
+    status: Literal["ok", "failed", "rolled_back"]
+    message: str | None = Field(default=None, max_length=200)
+
+
+class SyncJobIn(BaseModel):
+    """Задание синхронизации: с какого ПК, какие папки (относительно игровой папки) и на какие ПК. target_pc_ids пусто: на все остальные ПК клуба."""
+    source_pc_id: int
+    paths: list[str] = Field(min_length=1, max_length=20)
+    target_pc_ids: list[int] | None = Field(default=None, max_length=500)
+    delete_extra: bool = False     # у получателей убрать файлы в этих папках, которых нет на эталоне
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class GameEntry(BaseModel):
+    path: str = Field(min_length=1, max_length=260)
+    name: str = Field(min_length=1, max_length=120)
+    kind: Literal["dir", "steam"] = "dir"
+    size_bytes: int = Field(ge=0, le=1 << 50)
+    files: int = Field(ge=0, le=100_000_000)
+
+
+class GamesIn(BaseModel):
+    """Игры, найденные в игровой папке ПК: папка и её записи (до 3000). Негодные записи отбрасываются, остальные принимаются."""
+    root: str = Field(max_length=1024)
+    entries: list[dict] = Field(default_factory=list)
+
+    @field_validator("entries", mode="before")
+    @classmethod
+    def keep_valid(cls, items):
+        if not isinstance(items, list):
+            raise ValueError("entries: нужен список")
+        out = []
+        for item in items[:3000]:
+            try:
+                entry = GameEntry.model_validate(item)
+            except ValueError:
+                continue
+            out.append({**entry.model_dump(), "name": _one_line(entry.name) or entry.name})
+        return out
+
+
+class SyncManifestIn(BaseModel):
+    """Эталонный ПК посчитал список файлов: sha256 самого списка (его проверяют все получатели), число файлов и общий размер."""
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    files: int = Field(ge=0, le=10_000_000)
+    bytes: int = Field(ge=0, le=1 << 50)
+
+
+class SyncProgressIn(BaseModel):
+    status: Literal["scanning", "waiting", "syncing", "ready", "failed"]
+    bytes_done: int = Field(default=0, ge=0, le=1 << 50)
+    bytes_total: int = Field(default=0, ge=0, le=1 << 50)
+    bytes_fetched: int = Field(default=0, ge=0, le=1 << 50)
+    bytes_from_peers: int = Field(default=0, ge=0, le=1 << 50)
+    files_done: int = Field(default=0, ge=0, le=10_000_000)
+    files_total: int = Field(default=0, ge=0, le=10_000_000)
+    message: str | None = Field(default=None, max_length=200)
+    serve_url: str | None = Field(default=None, max_length=80, pattern=r"^http://\d{1,3}(\.\d{1,3}){3}:\d{2,5}$")
+
+
+class CommandIn(BaseModel):
+    kind: Literal["reboot", "shutdown"]
+    force: bool = False         # выполнить, даже если на ПК идёт сессия гостя
+
+
+class BulkCommandIn(CommandIn):
+    pc_ids: list[int] = Field(min_length=1, max_length=300)
+
+
+class CommandResultIn(BaseModel):
+    ok: bool
+    message: str | None = Field(default=None, max_length=300)
+
+
+class CopyTariffsIn(BaseModel):
+    """Скопировать тарифы в зал: из другого зала или (from_zone_id пусто) из общих тарифов клуба."""
+    from_zone_id: int | None = None
 
 
 class NoticeIn(BaseModel):
@@ -33,6 +219,7 @@ class PCPatch(BaseModel):
     pos_y: int | None = Field(default=None, ge=0, lt=MAP_ROWS)
     note: str | None = Field(default=None, max_length=200)
     maintenance: bool | None = None
+    zone_id: int | None = None          # перевести ПК в другой зал-шаблон; явный null: снять шаблон (ПК остаётся в зале на карте)
 
     @field_validator("name", "zone", "note")
     @classmethod
@@ -227,9 +414,15 @@ class TariffIn(BaseModel):
     package_minutes: int | None = Field(default=None, gt=0)
     night_start: int | None = Field(default=None, ge=0, le=23)
     night_end: int | None = Field(default=None, ge=0, le=23)
+    zone_id: int | None = None          # зал, которому принадлежит тариф; пусто: общий тариф клуба
+    day_prices: dict[int, int] | None = None   # цены по дням недели {0: пн ... 6: вс}; дней, которых нет, действует price
 
     @model_validator(mode="after")
     def check(self):
+        if self.day_prices is not None:
+            if any(not 0 <= d <= 6 for d in self.day_prices) or any(p <= 0 for p in self.day_prices.values()):
+                raise ValueError("цены по дням: день от 0 (пн) до 6 (вс), цена больше нуля")
+            self.day_prices = {d: p for d, p in self.day_prices.items() if p != self.price} or None   # равные обычной ценой хранить незачем
         if self.kind == "package" and not self.package_minutes:
             raise ValueError("для пакета нужен package_minutes")
         if self.kind == "night" and (self.night_start is None or self.night_end is None):

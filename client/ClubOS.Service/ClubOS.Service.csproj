@@ -17,6 +17,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- открытый ключ подписи версий: вшит в программу, см. Update/ReleaseKey.cs -->
+    <EmbeddedResource Include="release-public-key.pem" LogicalName="release-public-key.pem" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\ClubOS.Shared\ClubOS.Shared.csproj" />
   </ItemGroup>
 

@@ -2,6 +2,7 @@ using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using ClubOS.Shared;
+using ClubOS.Shared.Native;
 using Microsoft.Win32;
 
 namespace ClubOS.Service;
@@ -9,6 +10,7 @@ namespace ClubOS.Service;
 /// <summary>
 /// Определяет железо ПК средствами самой Windows (реестр, диски, сетевые адаптеры), без лишних библиотек.
 /// Каждая часть защищена: если что-то определить не вышло, это поле остаётся пустым, а остальное отправляется.
+/// Процессор, память, видеокарту, диски и сеть определяет нативная часть (C++, ClubOS.Native); чего она не определила или её нет, определяется здесь на C#.
 /// </summary>
 public static class HardwareCollector
 {
@@ -16,7 +18,17 @@ public static class HardwareCollector
 
     public static HardwareReport Collect()
     {
-        var (ip, mac) = Network();
+        var native = NativeHardware.Collect();
+        if (native is null) return CollectManaged();
+        var (managedIp, managedMac) = native.Ip is null ? NetworkManaged() : (null, null);
+        return new HardwareReport(native.Cpu ?? Cpu(), native.RamGb > 0 ? native.RamGb : Ram(), native.Gpu ?? Gpu(), Os(),
+            native.Ip ?? managedIp, native.Ip is null ? managedMac : native.Mac, native.Disks.Count > 0 ? native.Disks : Disks()).Normalized();
+    }
+
+    /// <summary>Тот же отчёт целиком на C#: запасной путь без нативной библиотеки и эталон для её проверки.</summary>
+    internal static HardwareReport CollectManaged()
+    {
+        var (ip, mac) = NetworkManaged();
         return new HardwareReport(Cpu(), Ram(), Gpu(), Os(), ip, mac, Disks()).Normalized();
     }
 
@@ -89,7 +101,13 @@ public static class HardwareCollector
     }
 
     /// <summary>Адрес и MAC рабочего сетевого адаптера: проводной в приоритете, виртуальные (VPN, Hyper-V) не берём.</summary>
-    private static (string? Ip, string? Mac) Network()
+    internal static (string? Ip, string? Mac) Network()
+    {
+        if (NativeHardware.Network() is { } found) return (found.Ip, found.Mac);
+        return NetworkManaged();
+    }
+
+    internal static (string? Ip, string? Mac) NetworkManaged()
     {
         try
         {
@@ -129,6 +147,12 @@ public sealed class HardwareReporter(ServerApi api, ILogger<HardwareReporter> lo
         await Task.Delay(TimeSpan.FromSeconds(20), stoppingToken).ConfigureAwait(false);   // дать службе спокойно подняться и связаться с сервером
         while (!stoppingToken.IsCancellationRequested)
         {
+            if (!api.HasKey)                                                                // ПК ещё подключается по коду: ключа пока нет
+            {
+                try { await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken).ConfigureAwait(false); }
+                catch (OperationCanceledException) { break; }
+                continue;
+            }
             var delay = Every;
             try
             {

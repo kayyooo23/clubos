@@ -2,24 +2,31 @@
 .SYNOPSIS
   Устанавливает клиент ClubOS на клубный ПК: служба Windows + автозапуск экрана блокировки.
 .DESCRIPTION
-  Запускать от имени администратора из папки dist (рядом лежат Service\ и Overlay\).
+  Запускать от имени администратора из папки dist (рядом лежат Service\, Overlay\ и version.txt).
   Что делает:
-    1. копирует программу в C:\Program Files\ClubOS;
-    2. пишет C:\ProgramData\ClubOS\agent.json (адрес сервера, КЛЮЧ ЭТОГО ПК, гостевой пользователь и режим очистки) и закрывает папку правами:
-       читать могут только система и администраторы — гость ключ прочитать не должен;
+    1. копирует программу в C:\Program Files\ClubOS\versions\<версия>: каждая версия живёт в своей папке, это нужно автообновлению
+       (новая версия ложится рядом, а при неудаче прежняя остаётся нетронутой и возвращается сама);
+    2. пишет C:\ProgramData\ClubOS\agent.json (адрес сервера, КОД ПОДКЛЮЧЕНИЯ или ключ этого ПК, гостевой пользователь и режим очистки) и закрывает
+       папку правами: читать могут только система и администраторы — гость ключ и код прочитать не должен;
+       с кодом подключения ПК при первом запуске службы сам подключается к клубу и получает свой ключ (вводить ключи руками не нужно);
     3. создаёт службу ClubOSAgent (автозапуск, перезапуск при сбое) и запускает её;
     4. создаёт задачу планировщика «ClubOS Overlay»: при входе гостевого пользователя запускает экран блокировки
        (--kiosk), а если он закрылся или упал — перезапускает.
   Ничего не удаляет и не меняет за пределами перечисленного. Для предварительного просмотра: -WhatIf.
 .EXAMPLE
+  .\install.ps1 -Server https://clubos.example.com -EnrollCode K7M2-9QXA-4TPD -GuestUser guest -WhatIf
+.EXAMPLE
   .\install.ps1 -Server https://clubos.example.com -PcKey <ключ ПК из админки> -GuestUser guest -WhatIf
 #>
-[CmdletBinding(SupportsShouldProcess = $true)]
+[CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = 'Code')]
 param(
     [Parameter(Mandatory)][string]$Server,       # адрес сервера ClubOS, лучше https://
-    [Parameter(Mandatory)][string]$PcKey,        # ключ ЭТОГО ПК (показывается один раз при создании ПК в админке)
+    [Parameter(Mandatory, ParameterSetName = 'Code')][string]$EnrollCode,   # код подключения из админки (раздел «Коды подключения»): один на все ПК зала
+    [Parameter(Mandatory, ParameterSetName = 'Key')][string]$PcKey,         # или ключ ЭТОГО ПК (показывается один раз при создании ПК в админке вручную)
     [string]$GuestUser = 'guest',                # локальный пользователь Windows, под которым играют гости
     [ValidateSet('on', 'dry-run', 'off')][string]$Cleanup = 'on',   # очистка ПК после сессии: on закрывает программы и удаляет данные гостя, dry-run только пишет в журнал
+    [string]$GamesRoot,                          # игровая папка этого ПК (например D:\Games или библиотека Steam): ПК будет участвовать в синхронизации игр
+    [int]$SyncPort = 47900,                      # порт, на котором ПК раздаёт файлы игр другим ПК клуба (открывается только для локальной сети)
     [string]$InstallDir = "$env:ProgramFiles\ClubOS"
 )
 $ErrorActionPreference = 'Stop'
@@ -33,12 +40,25 @@ if ($Server -notmatch '^https://' -and $Server -notmatch '^http://(localhost|127
 }
 $src = $PSScriptRoot
 foreach ($d in 'Service', 'Overlay') { if (-not (Test-Path (Join-Path $src $d))) { throw "Не найдена папка $d рядом со скриптом" } }
+$versionFile = Join-Path $src 'version.txt'
+if (-not (Test-Path $versionFile)) { throw 'Нет version.txt рядом со скриптом: соберите dist новым publish.ps1' }
+$Version = (Get-Content $versionFile -Raw).Trim()
+if ($Version -notmatch '^\d{1,4}\.\d{1,4}\.\d{1,4}(\.\d{1,4})?$') { throw "В version.txt не версия: '$Version'" }
+$versionDir = Join-Path $InstallDir "versions\$Version"
 
-# 1. программа
-if ($PSCmdlet.ShouldProcess($InstallDir, 'Скопировать файлы клиента')) {
-    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    Copy-Item (Join-Path $src 'Service') $InstallDir -Recurse -Force
-    Copy-Item (Join-Path $src 'Overlay') $InstallDir -Recurse -Force
+# 1. программа (повторная установка той же версии: сначала останавливаем работающие службу и оверлей, иначе файлы заняты)
+if ($PSCmdlet.ShouldProcess($versionDir, 'Скопировать файлы клиента')) {
+    if (Get-Service ClubOSAgent -ErrorAction SilentlyContinue) { Stop-Service ClubOSAgent -Force -ErrorAction SilentlyContinue }
+    Get-Process ClubOS.Overlay -ErrorAction SilentlyContinue | Stop-Process -Force
+    New-Item -ItemType Directory -Force -Path $versionDir | Out-Null
+    Copy-Item (Join-Path $src 'Service') $versionDir -Recurse -Force
+    Copy-Item (Join-Path $src 'Overlay') $versionDir -Recurse -Force
+    Copy-Item $versionFile $versionDir -Force
+    # папки прежней раскладки (до автообновления) больше не нужны
+    foreach ($legacy in 'Service', 'Overlay') {
+        $old = Join-Path $InstallDir $legacy
+        if (Test-Path $old) { Remove-Item $old -Recurse -Force; Write-Host "Удалена старая папка $old" }
+    }
 }
 
 # 2. настройки с ключом ПК — только для системы и администраторов
@@ -47,12 +67,24 @@ if ($PSCmdlet.ShouldProcess($dataDir, 'Создать agent.json и ограни
     New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
     icacls $dataDir /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' | Out-Null
     # guest_user ограничивает очистку: она действует только в сессии этого пользователя Windows и никогда в сессии администратора
-    @{ server = $Server.TrimEnd('/'); pc_key = $PcKey; guest_user = $GuestUser; cleanup = $Cleanup } | ConvertTo-Json | Set-Content (Join-Path $dataDir 'agent.json') -Encoding UTF8
+    $settings = @{ server = $Server.TrimEnd('/'); guest_user = $GuestUser; cleanup = $Cleanup }
+    if ($GamesRoot) { $settings.games_root = $GamesRoot; $settings.sync_port = $SyncPort }
+    if ($PSCmdlet.ParameterSetName -eq 'Key') { $settings.pc_key = $PcKey } else { $settings.enroll_code = $EnrollCode }
+    $settings | ConvertTo-Json | Set-Content (Join-Path $dataDir 'agent.json') -Encoding UTF8
+}
+
+# 2а. синхронизация игр: порт раздачи файлов открывается только для локальной подсети (правило по порту, а не по программе: путь программы меняется при обновлении)
+if ($GamesRoot) {
+    if (-not (Test-Path $GamesRoot)) { Write-Warning "Игровая папка $GamesRoot не найдена: создайте её или поправьте games_root в agent.json." }
+    if ($PSCmdlet.ShouldProcess("TCP $SyncPort", 'Открыть порт синхронизации игр для локальной сети')) {
+        Remove-NetFirewallRule -DisplayName 'ClubOS Sync' -ErrorAction SilentlyContinue
+        New-NetFirewallRule -DisplayName 'ClubOS Sync' -Direction Inbound -Protocol TCP -LocalPort $SyncPort -RemoteAddress LocalSubnet -Action Allow -Profile Any | Out-Null
+    }
 }
 
 # 3. служба
 $svc = 'ClubOSAgent'
-$exe = Join-Path $InstallDir 'Service\ClubOS.Service.exe'
+$exe = Join-Path $versionDir 'Service\ClubOS.Service.exe'
 if ($PSCmdlet.ShouldProcess($svc, 'Создать и запустить службу')) {
     if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force; sc.exe delete $svc | Out-Null; Start-Sleep 2 }
     New-Service -Name $svc -BinaryPathName "`"$exe`"" -DisplayName 'ClubOS Agent' `
@@ -62,7 +94,7 @@ if ($PSCmdlet.ShouldProcess($svc, 'Создать и запустить служ
 }
 
 # 4. экран блокировки при входе гостя, с перезапуском
-$overlay = Join-Path $InstallDir 'Overlay\ClubOS.Overlay.exe'
+$overlay = Join-Path $versionDir 'Overlay\ClubOS.Overlay.exe'
 if ($PSCmdlet.ShouldProcess("ClubOS Overlay ($GuestUser)", 'Создать задачу планировщика')) {
     $action = New-ScheduledTaskAction -Execute $overlay -Argument '--kiosk'
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $GuestUser

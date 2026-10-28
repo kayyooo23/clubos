@@ -34,10 +34,17 @@ public sealed class AgentCore
     private readonly ITokenStore _store;
     private string? _token; // токен входа на этом ПК; наружу не отдаётся никогда
 
-    public AgentCore(ServerApi api, AgentConfig cfg, TimeProvider? time = null, ITokenStore? store = null, AdImageCache? ads = null, CoverCache? covers = null)
+    private readonly EnrollmentManager? _enroll;   // нет в тестах и когда ключ задан вручную
+    private IReadOnlyList<CommandInfo>? _commands;
+    private IReadOnlyList<SyncAssignment> _sync = [];
+    private bool _gamesRequested;
+
+    public AgentCore(ServerApi api, AgentConfig cfg, TimeProvider? time = null, ITokenStore? store = null, AdImageCache? ads = null, CoverCache? covers = null,
+        EnrollmentManager? enroll = null)
     {
         _api = api;
         _cfg = cfg;
+        _enroll = enroll;
         _ads = ads ?? new AdImageCache(api, AgentConfig.AdsDir);
         _covers = covers ?? new CoverCache(api, AgentConfig.CoversDir);
         _time = time ?? TimeProvider.System;
@@ -53,10 +60,38 @@ public sealed class AgentCore
     /// <summary>Список отправлен: просьба выполнена, до следующего ответа сервера её не повторяем.</summary>
     public void ProgramsReported() { lock (_gate) _programsRequested = false; }
 
+    /// <summary>Администратор просил обновить список игр в игровой папке.</summary>
+    public bool GamesRequested { get { lock (_gate) return _gamesRequested; } }
+    public void GamesReported() { lock (_gate) _gamesRequested = false; }
+
+    /// <summary>Задания синхронизации игр, в которых этот ПК участвует (из последнего ответа сервера; пусто, если связи нет или заданий нет).</summary>
+    public IReadOnlyList<SyncAssignment> SyncAssignments { get { lock (_gate) return _sync; } }
+
+    /// <summary>Команды администратора из последнего ответа сервера (перезагрузка, выключение). Забирает их: каждый ответ сервера отдаётся исполнителю один раз.</summary>
+    public IReadOnlyList<CommandInfo> TakeCommands()
+    {
+        lock (_gate)
+        {
+            var taken = _commands ?? [];
+            _commands = null;
+            return taken;
+        }
+    }
+
     // ---------- состояние ----------
     public async Task RefreshAsync(CancellationToken ct = default)
     {
+        if (_enroll is not null && !await _enroll.EnsureAsync(ct).ConfigureAwait(false))
+        {
+            lock (_gate)
+            {
+                _connected = false;
+                _lastError = _enroll.Problem ?? "Подключение к серверу…";
+            }
+            return;
+        }
         var r = await _api.GetAsync<ServerState>(StatePath(), null, ct).ConfigureAwait(false);
+        var keyProblem = r.Ok ? null : _enroll?.KeyRejected(r.Status, r.Code);
         lock (_gate)
         {
             if (r.Ok && r.Value is not null)
@@ -66,12 +101,18 @@ public sealed class AgentCore
                 _connected = true;
                 _lastError = null;
                 _programsRequested = r.Value.ScanPrograms == true;   // администратор просил обновить список программ
+                _commands = r.Value.Commands is { Count: > 0 } commands ? commands : null;
+                _gamesRequested = r.Value.ScanGames == true;
+                _sync = r.Value.Sync ?? [];
                 if (_token is not null && r.Value.Account is null) ForgetToken(); // сервер завершил вход (бездействие, блокировка)
             }
             else
             {
                 _connected = false;
-                _lastError = r.Status == 401 ? "Ключ этого ПК недействителен. Обратитесь к администратору" : r.Error;
+                _lastError = keyProblem
+                    ?? (r.Status == 401 ? "Ключ этого ПК недействителен. Обратитесь к администратору"
+                        : r.Status == 409 && r.Code == "machine_mismatch" ? "Этот ключ ПК привязан к другому компьютеру. Обратитесь к администратору"
+                        : r.Error);
             }
         }
     }
